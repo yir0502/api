@@ -5,7 +5,7 @@ const r = Router();
 
 // POST /auth/login { email, password }
 r.post('/login', async (req, res) => {
-    console.log('Login attempt:', req.body);
+    console.log('nuevo inicio de sesiion:', req.body);
     
   const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: 'email y password requeridos' });
