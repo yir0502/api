@@ -177,9 +177,9 @@ r.get('/', async (req, res) => {
     if (include.includes('recientes')) {
       const { data: raw, error: errR } = await supabaseAdmin
         .from('movimientos')
-        .select('id, org_id, tipo, monto, categoria_id, fecha, created_at')
+        .select('id, org_id, tipo, monto, categoria_id, fecha')
         .eq('org_id', org_id)
-        .order('created_at', { ascending: false }) // por creación
+        .order('fecha', { ascending: false })
         .limit(limitRec);
       if (errR) return res.status(400).json({ error: errR.message });
 
@@ -187,7 +187,7 @@ r.get('/', async (req, res) => {
         id: m.id,
         tipo: m.tipo,
         categoria: m.categoria_id ? (catMap.get(m.categoria_id)?.nombre || 'Sin categoría') : 'Sin categoría',
-        fecha: m.created_at ?? (m.fecha + 'T00:00:00'),
+        fecha: m.fecha + 'T00:00:00',
         // Para la sección de "recientes" mostramos el signo: negativo si egreso.
         monto: m.tipo === 'egreso' ? -Math.abs(Number(m.monto) || 0) : Math.abs(Number(m.monto) || 0)
       }));
