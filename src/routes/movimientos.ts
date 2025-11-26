@@ -89,7 +89,7 @@ r.get('/', async (req: AuthedRequest, res) => {
 r.post('/', async (req: AuthedRequest, res) => {
   const org_id = (req.body.org_id as string) || (req as any).org_id;
   const usuario_id = req.user!.id;
-const { tipo, monto } = req.body || {};
+  const { tipo, monto } = req.body || {};
 
   if (!org_id) return res.status(401).json({ error: 'No org' });
   if (!tipo || typeof monto !== 'number') return res.status(400).json({ error: 'tipo y monto requeridos' });

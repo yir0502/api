@@ -12,10 +12,11 @@ type Mov = {
   tipo: 'ingreso' | 'egreso';
   monto: number | string;
   categoria_id: string | null;
-  sucursal_id?: string | null;      // 👈 NUEVO (para agregados por sucursal)
-  fecha: string;                    // YYYY-MM-DD
+  sucursal_id?: string | null;
+  fecha: string;
   created_at?: string;
 };
+
 type Cat = { id: string; org_id: string; nombre: string; tipo: 'ingreso' | 'egreso'; activo: boolean; };
 type Suc = { id: string; org_id: string; nombre: string; activo: boolean };
 
