@@ -56,6 +56,8 @@ r.put('/:id', async (req: AuthedRequest, res) => {
 
 // DELETE /categorias/:id
 r.delete('/:id', async (req: AuthedRequest, res) => {
+  console.log('DELETE /categorias/:id', req.params);
+  
   const { id } = req.params;
   const { error } = await supabaseAdmin
     .from('categorias')

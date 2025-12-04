@@ -62,8 +62,8 @@ r.get('/', async (req: AuthedRequest, res) => {
 // POST /sucursales  { nombre, activo? }
 r.post('/', async (req, res) => {
     try {
-        const org_id = (req as any).user?.org_id;
-        if (!org_id) return res.status(401).json({ error: 'No org' });
+        const org_id = (req as any)?.org_id;
+        if (!org_id) return res.status(400).json({ error: 'El usuario no pertenece a una organización' });
 
         const { nombre, activo } = req.body || {};
         if (!nombre || !String(nombre).trim()) {
