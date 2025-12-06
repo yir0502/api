@@ -8,14 +8,16 @@ r.use(requireAuth, requireMembership);
 
 // GET /categorias?org_id&tipo
 r.get('/', async (req: AuthedRequest, res) => {
-// en cada handler de sucursales:
+
+  console.log('GET /categorias', req.query);
+  
+
 const org_id =
   (req as any).user?.org_id
   || (req.query.org_id as string)              // permite ?org_id=...
   || process.env.DEFAULT_ORG_ID;               // fallback de dev
 
-if (!org_id) return res.status(401).json({ error: 'No org' });
-
+  if (!org_id) return res.status(401).json({ error: 'No org' });
   
   const tipo = (req.query.tipo as string | undefined) || undefined;
   let q = supabaseAdmin.from('categorias').select('*').eq('org_id', org_id);
