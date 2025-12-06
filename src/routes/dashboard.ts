@@ -1,25 +1,11 @@
-// routes/dashboard.ts
 import { Router } from 'express';
 import { supabaseAdmin } from '../lib/supabase';
-import { requireAuth } from '../lib/auth';
+import { requireAuth, AuthedRequest } from '../lib/auth';
 
 const r = Router();
 r.use(requireAuth);
 
-type Mov = {
-  id: string;
-  org_id: string;
-  tipo: 'ingreso' | 'egreso';
-  monto: number | string;
-  categoria_id: string | null;
-  sucursal_id?: string | null;
-  fecha: string;
-  created_at?: string;
-};
-
-type Cat = { id: string; org_id: string; nombre: string; tipo: 'ingreso' | 'egreso'; activo: boolean; };
-type Suc = { id: string; org_id: string; nombre: string; activo: boolean };
-
+// Helper de fechas
 const iso = (d: Date) => d.toISOString().slice(0, 10);
 const firstDayOfThisMonth = () => iso(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
 const todayISO = () => iso(new Date());
@@ -32,179 +18,205 @@ function eachDayInclusive(desdeISO: string, hastaISO: string): string[] {
   return out;
 }
 
+// Tipos internos para este endpoint
+type MovSimple = {
+  tipo: 'ingreso' | 'egreso';
+  monto: number;
+  categoria_id: string | null;
+  sucursal_id: string | null;
+  fecha: string;
+};
+
 r.get('/', async (req, res) => {
   try {
+    // 1. Validación y Parámetros
     const org_id = (req.query.org_id as string) || process.env.DEFAULT_ORG_ID!;
-    const include = String(req.query.include || 'mes,recientes').split(',').map(s => s.trim()).filter(Boolean);
+    if (!org_id) return res.status(400).json({ error: 'org_id requerido' });
+
+    const include = String(req.query.include || 'mes,recientes').split(',').map(s => s.trim());
     const limitRec = Math.max(1, Math.min(50, Number(req.query.limit_recientes) || 5));
 
-    // rango para la serie (si no envías, usa últimos 30 días)
+    // Rangos de fecha
     const desdeQ = (req.query.desde as string) || (() => { const d = new Date(); d.setDate(d.getDate() - 29); return iso(d); })();
     const hastaQ = (req.query.hasta as string) || todayISO();
-    if (!org_id) return res.status(400).json({ error: 'org_id requerido (o configura DEFAULT_ORG_ID)' });
+
     if (desdeQ > hastaQ) return res.status(400).json({ error: 'rango inválido: desde > hasta' });
 
-    // ===== Categorías (para nombres de categoría)
-    const { data: catsRaw, error: errCat } = await supabaseAdmin
-      .from('categorias')
-      .select('id, org_id, nombre, tipo, activo')
-      .eq('org_id', org_id);
-    if (errCat) return res.status(400).json({ error: errCat.message });
-    const cats = (catsRaw || []) as Cat[];
-    const catMap = new Map<string, Cat>(); cats.forEach(c => catMap.set(c.id, c));
+    // ============================================================
+    // 2. PREPARACIÓN DE PROMESAS (Consultas en Paralelo)
+    // ============================================================
 
-    // ===== Movimientos del rango para la serie + por_categoria del rango
-    const { data: movsRaw, error: errMov } = await supabaseAdmin
+    // A. Catálogos: Traemos todo lo activo para mapear nombres en memoria rápidamente (O(1))
+    // Esto evita tener que hacer consultas extras dentro de bucles.
+    const pCats = supabaseAdmin.from('categorias').select('id, nombre').eq('org_id', org_id);
+    const pSucs = supabaseAdmin.from('sucursales').select('id, nombre').eq('org_id', org_id);
+
+    // B. Movimientos del RANGO (Gráfica principal)
+    const pMovsRange = supabaseAdmin
       .from('movimientos')
-      .select('id, org_id, tipo, monto, categoria_id, sucursal_id, fecha')
+      .select('tipo, monto, categoria_id, sucursal_id, fecha') // Solo columnas necesarias = menos tráfico
       .eq('org_id', org_id)
       .gte('fecha', desdeQ)
-      .lte('fecha', hastaQ)
-      .order('fecha', { ascending: true });
-    if (errMov) return res.status(400).json({ error: errMov.message });
-    const movs = (movsRaw || []) as Mov[];
+      .lte('fecha', hastaQ);
 
-    // ===== Agregados de la SERIE (valor absoluto para sumatorias)
+    // C. Movimientos del MES (KPIs y Donas) - Solo si se pide
+    let pMovsMes: any = Promise.resolve({ data: [] }); 
+    
+    if (include.includes('mes')) {
+      const mesDesde = firstDayOfThisMonth();
+      const mesHasta = todayISO();
+      pMovsMes = supabaseAdmin
+        .from('movimientos')
+        .select('tipo, monto, categoria_id, sucursal_id') 
+        .eq('org_id', org_id)
+        .gte('fecha', mesDesde)
+        .lte('fecha', mesHasta);
+    }
+
+    // D. Recientes - Solo si se pide
+    let pRecientes: any = Promise.resolve({ data: [] });
+
+    if (include.includes('recientes')) {
+      pRecientes = supabaseAdmin
+        .from('movimientos')
+        .select('id, tipo, monto, categoria_id, fecha')
+        .eq('org_id', org_id)
+        .order('fecha', { ascending: false })
+        .limit(limitRec);
+    }
+    // ============================================================
+    // 3. EJECUCIÓN PARALELA (Await de todo junto) 🔥
+    // ============================================================
+    const [resCats, resSucs, resMovsRange, resMovsMes, resRecientes] = await Promise.all([
+      pCats, pSucs, pMovsRange, pMovsMes, pRecientes
+    ]);
+
+    if (resCats.error) throw resCats.error;
+    if (resMovsRange.error) throw resMovsRange.error;
+
+    // Mapas para búsqueda rápida de nombres
+    const catMap = new Map<string, string>();
+    (resCats.data || []).forEach((c: any) => catMap.set(c.id, c.nombre));
+
+    const sucMap = new Map<string, string>();
+    (resSucs.data || []).forEach((s: any) => sucMap.set(s.id, s.nombre));
+
+    // ============================================================
+    // 4. PROCESAMIENTO EN MEMORIA (Agregaciones)
+    // ============================================================
+
+    // --- A. Procesar Rango (Gráfica lineal) ---
+    const movsRange = (resMovsRange.data || []) as MovSimple[];
     let ingresos = 0, egresos = 0;
     const byDay = new Map<string, { ingresos: number; egresos: number }>();
     const byCatIngreso = new Map<string, number>();
     const byCatEgreso  = new Map<string, number>();
 
-    for (const m of movs) {
-      const montoAbs = Math.abs(Number(m.monto) || 0);
-      if (m.tipo === 'ingreso') ingresos += montoAbs; else egresos += montoAbs;
+    for (const m of movsRange) {
+      const val = Math.abs(Number(m.monto) || 0);
+      const isIngreso = m.tipo === 'ingreso';
 
-      const s = byDay.get(m.fecha) || { ingresos: 0, egresos: 0 };
-      if (m.tipo === 'ingreso') s.ingresos += montoAbs; else s.egresos += montoAbs;
-      byDay.set(m.fecha, s);
+      // Totales globales del rango
+      if (isIngreso) ingresos += val; else egresos += val;
 
-      const key = m.categoria_id || '__none__';
-      if (m.tipo === 'ingreso') byCatIngreso.set(key, (byCatIngreso.get(key) || 0) + montoAbs);
-      else                      byCatEgreso.set(key,  (byCatEgreso.get(key)  || 0) + montoAbs);
+      // Agrupado por Día
+      const d = m.fecha.slice(0, 10); // asegurar YYYY-MM-DD
+      const dayNode = byDay.get(d) || { ingresos: 0, egresos: 0 };
+      if (isIngreso) dayNode.ingresos += val; else dayNode.egresos += val;
+      byDay.set(d, dayNode);
+
+      // Agrupado por Categoría (Rango)
+      const catKey = m.categoria_id || 'sin_cat';
+      const targetMap = isIngreso ? byCatIngreso : byCatEgreso;
+      targetMap.set(catKey, (targetMap.get(catKey) || 0) + val);
     }
 
+    // Rellenar días vacíos para que la gráfica no tenga huecos
     const days = eachDayInclusive(desdeQ, hastaQ);
     const serie = days.map(d => {
       const s = byDay.get(d) || { ingresos: 0, egresos: 0 };
-      return { fecha: d, ingresos: s.ingresos, egresos: s.egresos, balance: s.ingresos - s.egresos };
+      return { fecha: d, ...s, balance: s.ingresos - s.egresos };
     });
 
-    const toCatArray = (map: Map<string, number>) =>
-      Array.from(map.entries()).map(([id, total]) => ({
-        categoria_id: id === '__none__' ? null : id,
-        nombre: id === '__none__' ? 'Sin categoría' : (catMap.get(id)?.nombre || 'Sin categoría'),
-        total
-      })).sort((a, b) => b.total - a.total);
+    // Helper para formatear array de categorías con nombres reales
+    const formatCats = (map: Map<string, number>) => 
+      Array.from(map.entries())
+        .map(([id, total]) => ({
+          categoria_id: id === 'sin_cat' ? null : id,
+          nombre: id === 'sin_cat' ? 'Sin categoría' : (catMap.get(id) || 'Sin categoría'),
+          total
+        }))
+        .sort((a, b) => b.total - a.total);
 
-    // ===== Datos de MES ACTUAL (para KPIs / dona / sucursales)
-    let kpis_mes:
-      | { ingresos: number; egresos: number; balance: number }
-      | undefined;
-    let por_categoria_mes:
-      | { ingreso: { categoria_id: string | null; nombre: string; total: number }[]
-        , egreso:  { categoria_id: string | null; nombre: string; total: number }[] }
-      | undefined;
-    let por_sucursal_mes:
-      | { sucursal_id: string | null; nombre: string; ingresos: number; egresos: number; balance: number }[]
-      | undefined;
-
+    // --- B. Procesar Mes Actual (KPIs) ---
+    let kpis_mes, por_categoria_mes, por_sucursal_mes;
+    
     if (include.includes('mes')) {
-      const mesDesde = firstDayOfThisMonth();
-      const mesHasta = todayISO();
+      const movsMes = (resMovsMes.data || []) as MovSimple[];
+      let ingM = 0, egrM = 0;
+      const catIngM = new Map<string, number>();
+      const catEgrM = new Map<string, number>();
+      const sucM = new Map<string, { ingresos: number; egresos: number }>();
 
-      const { data: movsMesRaw, error: errMes } = await supabaseAdmin
-        .from('movimientos')
-        .select('id, org_id, tipo, monto, categoria_id, sucursal_id, fecha')
-        .eq('org_id', org_id).gte('fecha', mesDesde).lte('fecha', mesHasta);
-      if (errMes) return res.status(400).json({ error: errMes.message });
-      const movsMes = (movsMesRaw || []) as Mov[];
-
-      let ing = 0, egr = 0;
-      const byCatIngMes = new Map<string, number>();
-      const byCatEgrMes = new Map<string, number>();
-      const bySucMes    = new Map<string, { ingresos: number; egresos: number }>();
-
-      // acumular
       for (const m of movsMes) {
-        const montoAbs = Math.abs(Number(m.monto) || 0);
-        if (m.tipo === 'ingreso') {
-          ing += montoAbs;
-          byCatIngMes.set(m.categoria_id || '__none__', (byCatIngMes.get(m.categoria_id || '__none__') || 0) + montoAbs);
-        } else {
-          egr += montoAbs;
-          byCatEgrMes.set(m.categoria_id || '__none__', (byCatEgrMes.get(m.categoria_id || '__none__') || 0) + montoAbs);
-        }
+        const val = Math.abs(Number(m.monto) || 0);
+        const isIngreso = m.tipo === 'ingreso';
 
-        const sucKey = m.sucursal_id || '__none__';
-        const sucAgg = bySucMes.get(sucKey) || { ingresos: 0, egresos: 0 };
-        if (m.tipo === 'ingreso') sucAgg.ingresos += montoAbs;
-        else                      sucAgg.egresos  += montoAbs;
-        bySucMes.set(sucKey, sucAgg);
+        // Totales Mes
+        if (isIngreso) ingM += val; else egrM += val;
+
+        // Categorías Mes
+        const cKey = m.categoria_id || 'sin_cat';
+        const cMap = isIngreso ? catIngM : catEgrM;
+        cMap.set(cKey, (cMap.get(cKey) || 0) + val);
+
+        // Sucursales Mes
+        const sKey = m.sucursal_id || 'sin_suc';
+        const sNode = sucM.get(sKey) || { ingresos: 0, egresos: 0 };
+        if (isIngreso) sNode.ingresos += val; else sNode.egresos += val;
+        sucM.set(sKey, sNode);
       }
 
-      kpis_mes = { ingresos: ing, egresos: egr, balance: ing - egr };
-      por_categoria_mes = { ingreso: toCatArray(byCatIngMes), egreso: toCatArray(byCatEgrMes) };
-
-      // nombres de sucursales para el mes (solo si hay ids)
-      const sucIds = [...bySucMes.keys()].filter(k => k !== '__none__') as string[];
-      let sucMap = new Map<string, string>();
-      if (sucIds.length) {
-        const { data: sucsRaw, error: errS } = await supabaseAdmin
-          .from('sucursales')
-          .select('id, org_id, nombre, activo')
-          .eq('org_id', org_id)
-          .in('id', sucIds);
-        if (errS) return res.status(400).json({ error: errS.message });
-        const sucs = (sucsRaw || []) as Suc[];
-        sucMap = new Map<string, string>(sucs.map(s => [s.id, s.nombre]));
-      }
-
-      por_sucursal_mes = Array.from(bySucMes.entries())
-        .map(([sucursal_id, v]) => ({
-          sucursal_id: sucursal_id === '__none__' ? null : sucursal_id,
-          nombre: sucursal_id === '__none__' ? 'Sin sucursal' : (sucMap.get(sucursal_id!) || 'Sin sucursal'),
+      kpis_mes = { ingresos: ingM, egresos: egrM, balance: ingM - egrM };
+      por_categoria_mes = { ingreso: formatCats(catIngM), egreso: formatCats(catEgrM) };
+      
+      // Mapeamos los nombres de sucursales usando el mapa que cargamos al inicio (sin consultas extra)
+      por_sucursal_mes = Array.from(sucM.entries())
+        .map(([id, v]) => ({
+          sucursal_id: id === 'sin_suc' ? null : id,
+          nombre: id === 'sin_suc' ? 'Sin sucursal' : (sucMap.get(id) || 'Sin sucursal'),
           ingresos: v.ingresos,
           egresos: v.egresos,
           balance: v.ingresos - v.egresos
         }))
-        .sort((a, b) => (b.ingresos + b.egresos) - (a.ingresos + a.egresos)); // opcional: ordenar por volumen
+        .sort((a, b) => (b.ingresos + b.egresos) - (a.ingresos + a.egresos));
     }
 
-    // ===== Últimos movimientos (para sección “Recientes”)
-    let recientes:
-      | { id: string; tipo: 'ingreso' | 'egreso'; categoria: string; fecha: string; monto: number }[]
-      | undefined;
-
+    // --- C. Procesar Recientes ---
+    let recientes;
     if (include.includes('recientes')) {
-      const { data: raw, error: errR } = await supabaseAdmin
-        .from('movimientos')
-        .select('id, org_id, tipo, monto, categoria_id, fecha')
-        .eq('org_id', org_id)
-        .order('fecha', { ascending: false })
-        .limit(limitRec);
-      if (errR) return res.status(400).json({ error: errR.message });
-
-      recientes = (raw || []).map((m: Mov) => ({
+      recientes = (resRecientes.data || []).map((m: any) => ({
         id: m.id,
         tipo: m.tipo,
-        categoria: m.categoria_id ? (catMap.get(m.categoria_id)?.nombre || 'Sin categoría') : 'Sin categoría',
-        fecha: m.fecha + 'T00:00:00',
-        // Para la sección de "recientes" mostramos el signo: negativo si egreso.
-        monto: m.tipo === 'egreso' ? -Math.abs(Number(m.monto) || 0) : Math.abs(Number(m.monto) || 0)
+        categoria: m.categoria_id ? (catMap.get(m.categoria_id) || 'Sin categoría') : 'Sin categoría',
+        fecha: m.fecha + 'T00:00:00', // Formato ISO para compatibilidad
+        monto: m.tipo === 'egreso' ? -Math.abs(m.monto) : Math.abs(m.monto)
       }));
     }
 
-    // ===== Respuesta final
+    // Respuesta Final
     res.json({
       range: { desde: desdeQ, hasta: hastaQ, dias: days.length },
       totales: { ingresos, egresos, balance: ingresos - egresos },
       por_dia: serie,
-      por_categoria: { ingreso: toCatArray(byCatIngreso), egreso: toCatArray(byCatEgreso) },
-      ...(include.includes('mes') ? { kpis_mes, por_categoria_mes, por_sucursal_mes } : {}),
-      ...(include.includes('recientes') ? { recientes } : {}),
-      meta: { items: movs.length }
+      por_categoria: { ingreso: formatCats(byCatIngreso), egreso: formatCats(byCatEgreso) },
+      ...(kpis_mes ? { kpis_mes, por_categoria_mes, por_sucursal_mes } : {}),
+      ...(recientes ? { recientes } : {}),
+      meta: { items: movsRange.length }
     });
+
   } catch (e: any) {
+    console.error('Error dashboard:', e);
     res.status(500).json({ error: e?.message || 'server error' });
   }
 });

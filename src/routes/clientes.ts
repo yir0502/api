@@ -2,90 +2,172 @@ import { Router } from 'express';
 import { supabaseAdmin } from '../lib/supabase';
 import { requireAuth, AuthedRequest } from '../lib/auth';
 import { requireMembership } from '../lib/guard';
+import { whatsappService } from '../lib/whatsapp';
 
-// Inicialización del Router de Express
 const r = Router();
 
-// Aplica middlewares de autenticación y membresía a todas las rutas de clientes
+// Middleware de seguridad: Usuario autenticado y miembro de la organización
 r.use(requireAuth, requireMembership);
 
-// -----------------------------------------------------------
-// GET /clientes?org_id
-// -----------------------------------------------------------
+// --- 1. LISTAR CLIENTES (Con Filtros y Paginación) ---
 r.get('/', async (req: AuthedRequest, res) => {
-    console.log('GET /clientes', req.query);
+  try {
+    const org_id = (req as any).org_id;
+    const { q, limit, offset } = req.query;
 
-    // Lógica para determinar el org_id (desde el usuario, query, o fallback de dev)
-    const org_id =
-        (req as any).user?.org_id ||
-        (req.query.org_id as string) || // permite ?org_id=...
-        process.env.DEFAULT_ORG_ID; // fallback de dev
+    let query = supabaseAdmin
+      .from('clientes')
+      .select('*', { count: 'exact' })
+      .eq('org_id', org_id)
+      .order('nombre', { ascending: true });
 
-    if (!org_id) return res.status(401).json({ error: 'No org' });
+    // Filtro de búsqueda (Nombre o Teléfono)
+    if (q && String(q).trim()) {
+      const term = String(q).trim();
+      // "ilike" es case-insensitive. Buscamos en ambos campos con OR.
+      query = query.or(`nombre.ilike.%${term}%,telefono.ilike.%${term}%`);
+    }
 
-    // Consulta a Supabase: selecciona todos los clientes de la organización
-    const { data, error } = await supabaseAdmin
-        .from('clientes')
-        .select('*')
-        .eq('org_id', org_id)
-        .order('nombre', { ascending: true }); // Ordena por nombre para mejor usabilidad
+    // Paginación
+    if (limit && offset) {
+      const from = Number(offset);
+      const to = from + Number(limit) - 1;
+      query = query.range(from, to);
+    }
 
-    if (error) return res.status(400).json({ error: error.message });
-    res.json(data);
+    const { data, error, count } = await query;
+    if (error) throw error;
+
+    res.json(data || []);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// -----------------------------------------------------------
-// POST /clientes { nombre, email, telefono, org_id? }
-// -----------------------------------------------------------
+// --- 2. CREAR CLIENTE ---
 r.post('/', async (req: AuthedRequest, res) => {
-    // Obtiene el org_id del cuerpo o del usuario autenticado
-    const org_id = (req.body.org_id as string) || (req as any).user?.org_id;
-    const { nombre } = req.body || {};
+  try {
+    const org_id = (req as any).org_id;
+    const { nombre, telefono, email, direccion, permite_whatsapp, frecuencia_recordatorio } = req.body;
 
-    if (!nombre) return res.status(400).json({ error: 'El nombre del cliente es requerido' });
-    if (!org_id) return res.status(401).json({ error: 'No org' });
+    if (!nombre) return res.status(400).json({ error: 'El nombre es obligatorio' });
 
-    // Inserta el nuevo cliente en Supabase
+    const payload = {
+      org_id,
+      nombre,
+      telefono,
+      email,
+      direccion,
+      permite_whatsapp: permite_whatsapp ?? true,
+      frecuencia_recordatorio: frecuencia_recordatorio ?? 15,
+      ultima_visita: new Date().toISOString() // Asumimos visita hoy al crear
+    };
+
     const { data, error } = await supabaseAdmin
-        .from('clientes')
-        .insert([{ ...req.body, org_id }])
-        .select()
-        .single();
+      .from('clientes')
+      .insert(payload)
+      .select()
+      .single();
 
-    if (error) return res.status(400).json({ error: error.message });
+    if (error) throw error;
     res.status(201).json(data);
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
-// -----------------------------------------------------------
-// PUT /clientes/:id
-// -----------------------------------------------------------
+// --- 3. ACTUALIZAR CLIENTE ---
 r.put('/:id', async (req: AuthedRequest, res) => {
+  try {
+    const org_id = (req as any).org_id;
     const { id } = req.params;
-    const { data, error } = await supabaseAdmin
-        .from('clientes')
-        .update(req.body)
-        .eq('id', id)
-        .select()
-        .single();
+    
+    // Evitamos actualizar campos sensibles como org_id o id
+    const { id: _, org_id: __, created_at, ...updates } = req.body;
 
-    if (error) return res.status(400).json({ error: error.message });
+    const { data, error } = await supabaseAdmin
+      .from('clientes')
+      .update(updates)
+      .eq('id', id)
+      .eq('org_id', org_id) // Seguridad extra: solo si pertenece a la org
+      .select()
+      .single();
+
+    if (error) throw error;
     res.json(data);
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
-// -----------------------------------------------------------
-// DELETE /clientes/:id
-// -----------------------------------------------------------
+// --- 4. ELIMINAR CLIENTE ---
 r.delete('/:id', async (req: AuthedRequest, res) => {
-    console.log('DELETE /clientes/:id', req.params);
-
+  try {
+    const org_id = (req as any).org_id;
     const { id } = req.params;
-    const { error } = await supabaseAdmin
-        .from('clientes')
-        .delete()
-        .eq('id', id); // Asume que el RLS en Supabase o un trigger verificará el org_id
 
-    if (error) return res.status(400).json({ error: error.message });
+    const { error } = await supabaseAdmin
+      .from('clientes')
+      .delete()
+      .eq('id', id)
+      .eq('org_id', org_id);
+
+    if (error) throw error;
     res.json({ ok: true });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// --- 5. MENSAJES MASIVOS (Real) ---
+r.post('/mass-message', async (req: AuthedRequest, res) => {
+  try {
+    const org_id = (req as any).org_id;
+    const { message } = req.body; // Mensaje personalizado
+
+    if (!message) return res.status(400).json({ error: 'Falta el mensaje' });
+
+    // 1. Buscar destinatarios aptos (WA activo + Teléfono válido)
+    const { data: targets, error } = await supabaseAdmin
+      .from('clientes')
+      .select('id, nombre, telefono')
+      .eq('org_id', org_id)
+      .eq('permite_whatsapp', true)
+      .not('telefono', 'is', null);
+
+    if (error) throw error;
+    if (!targets || targets.length === 0) {
+      return res.json({ message: 'No hay clientes aptos para envío', count: 0 });
+    }
+
+    // 2. Procesar envíos (en segundo plano o esperando, depende del volumen)
+    // Para < 50 clientes, podemos esperar. Para más, idealmente usar colas (bullmq).
+    // Aquí lo hacemos simple con espera.
+    
+    let enviados = 0;
+    
+    for (const cliente of targets) {
+      // Personalización básica: Reemplazar [Nombre] por el nombre real
+      const personalizedMsg = message.replace('[Nombre]', cliente.nombre.split(' ')[0]);
+      
+      if (cliente.telefono && cliente.telefono.length > 9) {
+        await whatsappService.send(cliente.telefono, personalizedMsg);
+        enviados++;
+        // Pequeña pausa para no ser marcado como spam inmediato (100ms)
+        await new Promise(r => setTimeout(r, 100)); 
+      }
+    }
+
+    res.json({ 
+      ok: true, 
+      message: 'Proceso finalizado', 
+      total: targets.length, 
+      enviados 
+    });
+
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 export default r;
