@@ -11,6 +11,7 @@ import auth from './routes/auth';
 import dashboard from './routes/dashboard';
 import sucursales from './routes/sucursales';
 import clientes from './routes/clientes';
+import pedidos from './routes/pedidos';
 
 const app = express();
 app.use(express.json());
@@ -23,6 +24,7 @@ app.use('/categorias', categorias);
 app.use('/dashboard', dashboard);
 app.use('/sucursales', sucursales);
 app.use('/clientes', clientes);
+app.use('/pedidos', pedidos);
 
 cron.schedule('0 9 * * *', async () => {
   // ⚠️ IMPORTANTE: Pon aquí tu número tal cual está en la base de datos

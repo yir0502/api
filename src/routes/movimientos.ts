@@ -73,10 +73,61 @@ r.get('/', async (req: AuthedRequest, res) => {
   return res.json(result);
 });
 
-// ... Mantén el resto de tus rutas POST, PUT, DELETE igual por ahora ...
-// (Solo asegúrate de exportar el router al final como lo tenías)
-// POST /movimientos ...
-// PUT /movimientos/:id ...
-// DELETE /movimientos/:id ...
+// POST /movimientos
+r.post('/', async (req: AuthedRequest, res) => {
+  const org_id = (req.body.org_id as string) || (req as any).org_id;
+  const usuario_id = req.user!.id;
+  const { tipo, monto } = req.body || {};
+
+  if (!org_id) return res.status(401).json({ error: 'No org' });
+  if (!tipo || typeof monto !== 'number') return res.status(400).json({ error: 'tipo y monto requeridos' });
+
+  const payload = req.body || {};
+  payload.org_id = org_id;
+  payload.usuario_id = usuario_id;
+
+  // valida sucursal_id si viene
+  if (payload.sucursal_id) {
+    const { data: s } = await supabaseAdmin.from('sucursales').select('id').eq('id', payload.sucursal_id).eq('org_id', org_id).maybeSingle();
+    if (!s) return res.status(400).json({ error: 'sucursal_id inválido' });
+  }
+
+  const { data, error } = await supabaseAdmin.from('movimientos').insert({ ...payload, org_id }).select().single();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json(data);
+});
+
+// PUT /movimientos/:id
+r.put('/:id', async (req: AuthedRequest, res) => {
+  const org_id = (req as any).org_id as string;
+
+  const { id } = req.params;
+  if (!org_id) return res.status(401).json({ error: 'No org' });
+
+  const patch = req.body || {};
+  if ('sucursal_id' in patch && patch.sucursal_id) {
+    const { data: s } = await supabaseAdmin.from('sucursales').select('id').eq('id', patch.sucursal_id).eq('org_id', org_id).maybeSingle();
+    if (!s) return res.status(400).json({ error: 'sucursal_id inválido' });
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('movimientos')
+    .update(patch)
+    .eq('id', id).eq('org_id', org_id)
+    .select().single();
+
+  if (error) return res.status(400).json({ error: error.message });
+  res.json(data);
+});
+
+// DELETE /movimientos/:id
+r.delete('/:id', async (req: AuthedRequest, res) => {
+  const org_id = (req as any).org_id as string;
+
+  const { id } = req.params;
+  const { error } = await supabaseAdmin.from('movimientos').delete().eq('id', id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ ok: true });
+});
 
 export default r;
