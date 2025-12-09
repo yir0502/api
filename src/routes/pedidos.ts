@@ -44,7 +44,6 @@ r.get('/', requireMembership, async (req: AuthedRequest, res) => {
 
     // Filtro: Activos vs Historial
     if (activo === 'true') {
-      // Consideramos activos todo lo que NO esté entregado o cancelado
       query = query.in('estado', ['pendiente', 'en_proceso', 'listo']);
     } else if (activo === 'false') {
       query = query.in('estado', ['entregado', 'cancelado']);
@@ -52,15 +51,17 @@ r.get('/', requireMembership, async (req: AuthedRequest, res) => {
 
     // Buscador
     if (q) {
-      // Nota: Para buscar por nombre de cliente relacional se requiere un join especial o filtro post-query.
-      // Por eficiencia simple, aquí buscamos por folio. 
-      // Si necesitas buscar por nombre de cliente, es mejor denormalizar el nombre en la tabla pedidos o usar búsqueda avanzada.
       query = query.ilike('folio', `%${q}%`);
     }
 
     // Paginación
     if (limit && offset) {
       query = query.range(Number(offset), Number(offset) + Number(limit) - 1);
+    }
+
+    // cantidad específica
+    if (limit) {
+      query = query.limit(Number(limit));
     }
 
     const { data, error, count } = await query;
