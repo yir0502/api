@@ -12,6 +12,7 @@ import dashboard from './routes/dashboard';
 import sucursales from './routes/sucursales';
 import clientes from './routes/clientes';
 import pedidos from './routes/pedidos';
+import rastreo from './routes/rastreo';
 
 const app = express();
 app.use(express.json());
@@ -25,6 +26,8 @@ app.use('/dashboard', dashboard);
 app.use('/sucursales', sucursales);
 app.use('/clientes', clientes);
 app.use('/pedidos', pedidos);
+app.use('/pedidos', pedidos);
+app.use('/rastreo', rastreo);
 
 cron.schedule('0 9 * * *', async () => {
   // ⚠️ IMPORTANTE: Pon aquí tu número tal cual está en la base de datos

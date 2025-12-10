@@ -50,7 +50,26 @@ r.post('/', async (req: AuthedRequest, res) => {
     const org_id = (req as any).org_id;
     const { nombre, telefono, email, direccion, permite_whatsapp, frecuencia_recordatorio } = req.body;
 
+    if (!org_id) return res.status(401).json({ error: 'La organización es obligatoria' });
+
     if (!nombre) return res.status(400).json({ error: 'El nombre es obligatorio' });
+    console.log('Creando cliente:', req.body);
+    
+
+    // validar si el numero de teléfono ya existe para la misma org
+    const { data: existing, error: existError } = await supabaseAdmin
+      .from('clientes')
+      .select('id')
+      .eq('org_id', org_id)
+      .eq('telefono', telefono)
+
+      console.log('Existing check error:', existError);
+      console.log('Existing check data:', existing);
+      
+    if (existError && existError.code !== 'PGRST116') throw existError; // PGRST116 = no encontrado
+    if (existing && existing.length > 0) {
+      return res.status(400).json({ error: 'El número de teléfono ya está registrado para otro cliente' });
+    }
 
     const payload = {
       org_id,
@@ -60,7 +79,7 @@ r.post('/', async (req: AuthedRequest, res) => {
       direccion,
       permite_whatsapp: permite_whatsapp ?? true,
       frecuencia_recordatorio: frecuencia_recordatorio ?? 15,
-      ultima_visita: new Date().toISOString() // Asumimos visita hoy al crear
+      ultima_visita: new Date().toISOString()
     };
 
     const { data, error } = await supabaseAdmin

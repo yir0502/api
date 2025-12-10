@@ -76,6 +76,18 @@ r.post('/', async (req, res) => {
             ...(typeof activo !== 'undefined' ? { activo: !!activo } : {})
         };
 
+        // validar que no exista otra sucursal con el mismo nombre en la org
+        const { data: existing, error: existError } = await supabaseAdmin
+            .from('sucursales')
+            .select('id')
+            .eq('org_id', org_id)
+            .eq('nombre', payload.nombre)
+
+        if (existError) throw existError;
+        if (existing && existing.length > 0) {
+            return res.status(400).json({ error: 'Ya existe una sucursal con ese nombre' });
+        }
+
         const { data, error } = await supabaseAdmin
             .from('sucursales')
             .insert(payload)

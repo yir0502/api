@@ -38,13 +38,13 @@ r.get('/', requireMembership, async (req: AuthedRequest, res) => {
 
     let query = supabaseAdmin
       .from('pedidos')
-      .select('*, clientes(nombre, telefono)', { count: 'exact' })
+      .select('*, clientes(nombre, telefono), sucursales(nombre)', { count: 'exact' })
       .eq('org_id', org_id)
       .order('created_at', { ascending: false });
 
     // Filtro: Activos vs Historial
     if (activo === 'true') {
-      query = query.in('estado', ['pendiente', 'en_proceso', 'listo']);
+      query = query.in('estado', ['recibido', 'lavando', 'listo']);
     } else if (activo === 'false') {
       query = query.in('estado', ['entregado', 'cancelado']);
     }
@@ -58,10 +58,10 @@ r.get('/', requireMembership, async (req: AuthedRequest, res) => {
     if (limit && offset) {
       query = query.range(Number(offset), Number(offset) + Number(limit) - 1);
     }
-
-    // cantidad específica
-    if (limit) {
-      query = query.limit(Number(limit));
+    
+    // Cantidad específica (si envías limit sin offset)
+    if (limit && !offset) {
+       query = query.limit(Number(limit));
     }
 
     const { data, error, count } = await query;
@@ -71,7 +71,9 @@ r.get('/', requireMembership, async (req: AuthedRequest, res) => {
     const result = data.map((p: any) => ({
       ...p,
       cliente_nombre: p.clientes?.nombre || 'Cliente Manual',
-      cliente_telefono: p.clientes?.telefono || ''
+      cliente_telefono: p.clientes?.telefono || '',
+      // 👇 CAMBIO 2: Mapeamos el nombre de la sucursal
+      sucursal_nombre: p.sucursales?.nombre || 'Sin sucursal'
     }));
 
     res.json(result);
@@ -84,10 +86,9 @@ r.get('/', requireMembership, async (req: AuthedRequest, res) => {
 r.post('/', requireMembership, async (req: AuthedRequest, res) => {
   try {
     const org_id = (req as any).org_id;
-    const { cliente_id, descripcion, fecha_entrega_estimada, monto_total } = req.body;
+    const { cliente_id, descripcion, fecha_entrega_estimada, monto_total, sucursal_id } = req.body;
 
     // Generar un folio único
-    // (En producción idealmente verificas que no exista, pero la probabilidad de colisión es baja para volúmenes normales)
     const folio = generarFolio();
 
     const payload = {
@@ -97,8 +98,9 @@ r.post('/', requireMembership, async (req: AuthedRequest, res) => {
       descripcion,
       fecha_entrega_estimada,
       monto_total,
-      saldo_pendiente: monto_total, // Al inicio deben todo
-      estado: 'pendiente'
+      saldo_pendiente: monto_total,
+      sucursal_id,
+      estado: 'recibido' // Estado inicial
     };
 
     const { data, error } = await supabaseAdmin
@@ -118,12 +120,13 @@ r.post('/', requireMembership, async (req: AuthedRequest, res) => {
 r.put('/:id', requireMembership, async (req: AuthedRequest, res) => {
   try {
     const { id } = req.params;
-    const { estado, saldo_pendiente, fecha_entrega_estimada } = req.body;
+    const { estado, saldo_pendiente, fecha_entrega_estimada, sucursal_id } = req.body;
 
     const updates: any = {};
     if (estado) updates.estado = estado;
     if (saldo_pendiente !== undefined) updates.saldo_pendiente = saldo_pendiente;
     if (fecha_entrega_estimada) updates.fecha_entrega_estimada = fecha_entrega_estimada;
+    if (sucursal_id) updates.sucursal_id = sucursal_id;
 
     // Si se marca como entregado, guardamos la fecha real
     if (estado === 'entregado') {
@@ -208,6 +211,25 @@ r.get('/:id/evidencia', requireMembership, async (req: AuthedRequest, res) => {
 
     if (error) throw error;
     res.json(data);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 6. ELIMINAR PEDIDO
+r.delete('/:id', requireMembership, async (req: AuthedRequest, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Eliminamos el pedido (la base de datos se encargará de borrar 
+    // las evidencias en cascada si configuraste "ON DELETE CASCADE")
+    const { error } = await supabaseAdmin
+      .from('pedidos')
+      .delete()
+      .eq('id', id);
+
+    if (error) throw error;
+    res.json({ ok: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
