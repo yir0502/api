@@ -120,10 +120,12 @@ r.post('/', requireMembership, async (req: AuthedRequest, res) => {
 r.put('/:id', requireMembership, async (req: AuthedRequest, res) => {
   try {
     const { id } = req.params;
-    const { estado, saldo_pendiente, fecha_entrega_estimada, sucursal_id } = req.body;
+    const { estado, descripcion, monto_total, saldo_pendiente, fecha_entrega_estimada, sucursal_id } = req.body;
 
     const updates: any = {};
     if (estado) updates.estado = estado;
+    if (descripcion) updates.descripcion = descripcion;
+    if (monto_total !== undefined) updates.monto_total = monto_total;
     if (saldo_pendiente !== undefined) updates.saldo_pendiente = saldo_pendiente;
     if (fecha_entrega_estimada) updates.fecha_entrega_estimada = fecha_entrega_estimada;
     if (sucursal_id) updates.sucursal_id = sucursal_id;
@@ -249,9 +251,6 @@ r.delete('/:id/evidencia/:evidenciaId', requireMembership, async (req: AuthedReq
 
     if (findError || !evidencia) return res.status(404).json({ error: 'Evidencia no encontrada' });
 
-    // 2. Intentar borrar del Storage (Limpieza)
-    // La URL pública suele ser: .../storage/v1/object/public/evidencias/CARPETA/ARCHIVO.jpg
-    // Necesitamos extraer la ruta relativa: "CARPETA/ARCHIVO.jpg"
     try {
       // Hacemos split por el nombre del bucket ("evidencias")
       const urlParts = evidencia.url.split('/evidencias/');
