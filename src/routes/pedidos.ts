@@ -86,7 +86,7 @@ r.get('/', requireMembership, async (req: AuthedRequest, res) => {
 r.post('/', requireMembership, async (req: AuthedRequest, res) => {
   try {
     const org_id = (req as any).org_id;
-    const { cliente_id, descripcion, fecha_entrega_estimada, monto_total, sucursal_id } = req.body;
+    const { cliente_id, descripcion, fecha_entrega_estimada, saldo_pendiente, monto_total, sucursal_id } = req.body;
 
     // Generar un folio único
     const folio = generarFolio();
@@ -98,7 +98,7 @@ r.post('/', requireMembership, async (req: AuthedRequest, res) => {
       descripcion,
       fecha_entrega_estimada,
       monto_total,
-      saldo_pendiente: monto_total,
+      saldo_pendiente,
       sucursal_id,
       estado: 'recibido' // Estado inicial
     };
