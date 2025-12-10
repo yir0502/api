@@ -235,4 +235,46 @@ r.delete('/:id', requireMembership, async (req: AuthedRequest, res) => {
   }
 });
 
+r.delete('/:id/evidencia/:evidenciaId', requireMembership, async (req: AuthedRequest, res) => {
+  try {
+    const { id, evidenciaId } = req.params;
+
+    // 1. Obtener la evidencia para saber qué archivo borrar
+    const { data: evidencia, error: findError } = await supabaseAdmin
+      .from('pedido_evidencias')
+      .select('url')
+      .eq('id', evidenciaId)
+      .eq('pedido_id', id)
+      .single();
+
+    if (findError || !evidencia) return res.status(404).json({ error: 'Evidencia no encontrada' });
+
+    // 2. Intentar borrar del Storage (Limpieza)
+    // La URL pública suele ser: .../storage/v1/object/public/evidencias/CARPETA/ARCHIVO.jpg
+    // Necesitamos extraer la ruta relativa: "CARPETA/ARCHIVO.jpg"
+    try {
+      // Hacemos split por el nombre del bucket ("evidencias")
+      const urlParts = evidencia.url.split('/evidencias/');
+      if (urlParts.length > 1) {
+        const path = urlParts[1]; // Esto nos da "pedido_id/timestamp.jpg"
+        await supabaseAdmin.storage.from('evidencias').remove([path]);
+      }
+    } catch (err) {
+      console.warn('No se pudo borrar el archivo físico, pero continuamos con la BD:', err);
+    }
+
+    // 3. Borrar el registro de la Base de Datos
+    const { error: deleteError } = await supabaseAdmin
+      .from('pedido_evidencias')
+      .delete()
+      .eq('id', evidenciaId);
+
+    if (deleteError) throw deleteError;
+
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 export default r;
