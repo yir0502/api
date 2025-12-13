@@ -44,7 +44,7 @@ r.get('/', requireMembership, async (req: AuthedRequest, res) => {
 
     // Filtro: Activos vs Historial
     if (activo === 'true') {
-      query = query.in('estado', ['recibido', 'lavando', 'listo']);
+      query = query.in('estado', ['recibido', 'lavando', 'secando', 'doblando', 'listo']);
     } else if (activo === 'false') {
       query = query.in('estado', ['entregado', 'cancelado']);
     }
