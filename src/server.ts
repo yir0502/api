@@ -28,7 +28,6 @@ app.use('/dashboard', dashboard);
 app.use('/sucursales', sucursales);
 app.use('/clientes', clientes);
 app.use('/pedidos', pedidos);
-app.use('/pedidos', pedidos);
 app.use('/rastreo', rastreo);
 
 // Inicializamos las tareas automáticas
