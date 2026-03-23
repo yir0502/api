@@ -12,7 +12,7 @@ export class PedidosService {
     return `LAV-${result}`; 
   }
 
-  static async listarPedidos(org_id: string, activo?: string, q?: string, limit?: number, offset?: number) {
+  static async listarPedidos(org_id: string, activo?: string, q?: string, limit?: number, offset?: number, deuda?: string) {
     let query = supabaseAdmin
       .from('pedidos')
       .select('*, clientes(nombre, telefono), sucursales(nombre)', { count: 'exact' })
@@ -23,6 +23,10 @@ export class PedidosService {
       query = query.in('estado', ['recibido', 'lavando', 'secando', 'doblando', 'listo', 'en_proceso']);
     } else if (activo === 'false') {
       query = query.in('estado', ['entregado', 'cancelado']);
+    }
+
+    if (deuda === 'true') {
+      query = query.eq('estado', 'entregado').gt('saldo_pendiente', 0);
     }
 
     if (q) {

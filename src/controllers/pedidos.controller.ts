@@ -6,14 +6,15 @@ export class PedidosController {
   
   static async listar(req: AuthedRequest, res: Response) {
     const org_id = (req as any).org_id;
-    const { activo, q, limit, offset } = req.query;
+    const { activo, q, limit, offset, deuda } = req.query;
     
     const result = await PedidosService.listarPedidos(
       org_id, 
       activo as string, 
       q as string, 
       limit ? Number(limit) : undefined, 
-      offset ? Number(offset) : undefined
+      offset ? Number(offset) : undefined,
+      deuda as string
     );
     res.json(result);
   }
