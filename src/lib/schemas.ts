@@ -43,10 +43,11 @@ export const ClienteSchema = z.object({
   body: z.object({
     nombre: z.string().min(2),
     telefono: z.string().min(10),
-    email: z.string().email().optional().or(z.literal('')),
+    email: z.string().email().optional().nullable().or(z.literal('')),
     direccion: z.string().optional().nullable(),
     permite_whatsapp: z.boolean().optional(),
-    frecuencia_recordatorio: z.number().int().min(1).optional(),
+    frecuencia_recordatorio: z.number().int().min(0).optional(),
+    fecha_ultima_promo: z.string().optional().nullable(),
   })
 });
 

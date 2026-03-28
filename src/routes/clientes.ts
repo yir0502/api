@@ -15,13 +15,21 @@ r.use(requireAuth, requireMembership);
 // --- 1. LISTAR CLIENTES (Con Filtros y Paginación) ---
 r.get('/', asyncHandler(async (req: AuthedRequest, res: any) => {
   const org_id = (req as any).org_id;
-  const { q, limit, offset } = req.query;
+  const { q, limit, offset, filter } = req.query;
 
   let query = supabaseAdmin
     .from('clientes')
     .select('*', { count: 'exact' })
     .eq('org_id', org_id)
     .order('nombre', { ascending: true });
+
+  if (filter === 'falta_promo') {
+    const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+    query = query.or(`fecha_ultima_promo.is.null,fecha_ultima_promo.lt.${startOfMonth}`);
+  } else if (filter === 'inactivos') {
+    const fifteenDaysAgo = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
+    query = query.lt('ultima_visita', fifteenDaysAgo);
+  }
 
   // Filtro de búsqueda (Nombre o Teléfono)
   if (q && String(q).trim()) {
@@ -39,7 +47,7 @@ r.get('/', asyncHandler(async (req: AuthedRequest, res: any) => {
   const { data, error, count } = await query;
   if (error) throw error;
 
-  res.json(data || []);
+  res.json({ data: data || [], count: count || 0 });
 }));
 
 // --- 2. CREAR CLIENTE ---
