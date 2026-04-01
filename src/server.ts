@@ -1,10 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import cron from 'node-cron';
-import { supabaseAdmin } from './lib/supabase';
 import { globalErrorHandler } from './lib/error';
-import { whatsappService } from './lib/whatsapp';
 import { initWhatsAppJobs } from './jobs/whatsapp.job';
 
 import movimientos from './routes/movimientos';

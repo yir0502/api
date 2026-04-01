@@ -26,9 +26,16 @@ r.get('/', asyncHandler(async (req: AuthedRequest, res: any) => {
   if (filter === 'falta_promo') {
     const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
     query = query.or(`fecha_ultima_promo.is.null,fecha_ultima_promo.lt.${startOfMonth}`);
-  } else if (filter === 'inactivos') {
+  } else if (filter === '0-15') {
     const fifteenDaysAgo = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
-    query = query.lt('ultima_visita', fifteenDaysAgo);
+    query = query.gte('ultima_visita', fifteenDaysAgo);
+  } else if (filter === '16-45') {
+    const fifteenDaysAgo = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
+    const fortyFiveDaysAgo = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000).toISOString();
+    query = query.lt('ultima_visita', fifteenDaysAgo).gte('ultima_visita', fortyFiveDaysAgo);
+  } else if (filter === '45plus') {
+    const fortyFiveDaysAgo = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000).toISOString();
+    query = query.lt('ultima_visita', fortyFiveDaysAgo);
   }
 
   // Filtro de búsqueda (Nombre o Teléfono)
@@ -50,7 +57,63 @@ r.get('/', asyncHandler(async (req: AuthedRequest, res: any) => {
   res.json({ data: data || [], count: count || 0 });
 }));
 
-// --- 2. CREAR CLIENTE ---
+// --- 2. ESTADÍSTICAS GLOBALES ---
+r.get('/stats', asyncHandler(async (req: AuthedRequest, res: any) => {
+  const org_id = (req as any).org_id;
+  const { data, error } = await supabaseAdmin
+    .from('clientes')
+    .select('id, ultima_visita, fecha_ultima_promo, permite_whatsapp, frecuencia_recordatorio')
+    .eq('org_id', org_id);
+
+  if (error) throw error;
+
+  let faltan_promo = 0;
+  let active_0_15 = 0;
+  let risk_16_45 = 0;
+  let lost_45plus = 0;
+  let con_whatsapp = 0;
+  
+  // Distribución por frecuencia
+  const frecuencias: any = { '7': 0, '15': 0, '30': 0, 'otros': 0 };
+
+  const now = Date.now();
+  const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+
+  data?.forEach(c => {
+    // WhatsApp
+    if (c.permite_whatsapp) con_whatsapp++;
+    
+    // Frecuencia
+    const f = String(c.frecuencia_recordatorio || 15);
+    if (['7', '15', '30'].includes(f)) frecuencias[f]++;
+    else frecuencias.otros++;
+
+    // Promo
+    if (!c.fecha_ultima_promo || new Date(c.fecha_ultima_promo) < startOfMonth) {
+      faltan_promo++;
+    }
+    // Visita
+    if (!c.ultima_visita) {
+      lost_45plus++; 
+    } else {
+      const diff = now - new Date(c.ultima_visita).getTime();
+      const dias = diff / (1000 * 3600 * 24);
+      if (dias <= 15) active_0_15++;
+      else if (dias <= 45) risk_16_45++;
+      else lost_45plus++;
+    }
+  });
+
+  res.json({
+    total: data?.length || 0,
+    faltan_promo,
+    con_whatsapp,
+    frecuencias,
+    segmentos: { active_0_15, risk_16_45, lost_45plus }
+  });
+}));
+
+// --- 3. CREAR CLIENTE ---
 r.post('/', validateRequest(ClienteSchema), asyncHandler(async (req: AuthedRequest, res: any) => {
   const org_id = (req as any).org_id;
   const { nombre, telefono, email, direccion, permite_whatsapp, frecuencia_recordatorio } = req.body;
