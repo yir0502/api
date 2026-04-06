@@ -48,6 +48,7 @@ export const ClienteSchema = z.object({
     permite_whatsapp: z.boolean().optional(),
     frecuencia_recordatorio: z.number().int().min(0).optional(),
     fecha_ultima_promo: z.string().optional().nullable(),
+    invitaciones_enviadas: z.number().int().min(0).optional(),
   })
 });
 

@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import { globalErrorHandler } from './lib/error';
 import { initWhatsAppJobs } from './jobs/whatsapp.job';
 
@@ -14,6 +15,7 @@ import pedidos from './routes/pedidos';
 import rastreo from './routes/rastreo';
 
 const app = express();
+app.use(compression());
 app.use(express.json());
 app.use(cors({ origin: process.env.CORS_ORIGIN?.split(',') || '*', credentials: false }));
 

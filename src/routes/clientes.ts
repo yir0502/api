@@ -213,6 +213,8 @@ r.post('/mass-message', asyncHandler(async (req: AuthedRequest, res: any) => {
     if (cliente.telefono && cliente.telefono.length > 9) {
       await whatsappService.send(cliente.telefono, personalizedMsg);
       enviados++;
+      // Incrementar contador en la BD
+      await supabaseAdmin.rpc('increment_invitations', { client_id: cliente.id });
       await new Promise(r => setTimeout(r, 100)); 
     }
   }
