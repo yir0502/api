@@ -25,6 +25,7 @@ export const PedidoSchema = z.object({
     fecha_entrega_estimada: z.string().optional().nullable(),
     monto_total: z.number().min(0),
     saldo_pendiente: z.number().min(0),
+    descuento_aplicado: z.number().min(0).optional().default(0),
   })
 });
 
@@ -34,6 +35,7 @@ export const PedidoUpdateSchema = z.object({
     descripcion: z.string().optional().nullable(),
     monto_total: z.number().min(0).optional(),
     saldo_pendiente: z.number().min(0).optional(),
+    descuento_aplicado: z.number().min(0).optional(),
     fecha_entrega_estimada: z.string().optional().nullable(),
     sucursal_id: z.string().uuid().optional().nullable(),
   })

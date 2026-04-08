@@ -61,12 +61,64 @@ export class PedidosService {
       .single();
 
     if (error) throw error;
+    
+    // Descontar monedero si se aplicó
+    if (payload.descuento_aplicado && payload.descuento_aplicado > 0 && payload.cliente_id) {
+      const { data: cliente } = await supabaseAdmin
+        .from('clientes')
+        .select('monedero')
+        .eq('id', payload.cliente_id)
+        .single();
+        
+      if (cliente) {
+        const monederoAct = Number(cliente.monedero) || 0;
+        await supabaseAdmin
+          .from('clientes')
+          .update({ monedero: Math.max(0, monederoAct - payload.descuento_aplicado) })
+          .eq('id', payload.cliente_id);
+      }
+    }
+
     return data;
   }
 
   static async actualizarPedido(id: string, updates: any) {
     if (updates.estado === 'entregado') {
       updates.fecha_entregado = new Date().toISOString();
+      
+      // Lógica de Monedero (Cashback)
+      const { data: currentPedido } = await supabaseAdmin
+        .from('pedidos')
+        .select('cliente_id, puntos_generados')
+        .eq('id', id)
+        .single();
+        
+      if (currentPedido?.cliente_id && !currentPedido.puntos_generados) {
+        // Obtener cliente actual para revisar su contador
+        const { data: cliente } = await supabaseAdmin
+          .from('clientes')
+          .select('contador_servicios, monedero')
+          .eq('id', currentPedido.cliente_id)
+          .single();
+          
+        if (cliente) {
+          const contadorAct = Number(cliente.contador_servicios) || 0;
+          const monederoAct = Number(cliente.monedero) || 0;
+          
+          const nuevoContador = contadorAct + 1;
+          const ganancia = (nuevoContador % 4 === 0) ? 30 : 10;
+          
+          await supabaseAdmin
+            .from('clientes')
+            .update({ 
+              contador_servicios: nuevoContador,
+              monedero: monederoAct + ganancia 
+            })
+            .eq('id', currentPedido.cliente_id);
+            
+          updates.puntos_generados = true;
+        }
+      }
     }
 
     const { data, error } = await supabaseAdmin

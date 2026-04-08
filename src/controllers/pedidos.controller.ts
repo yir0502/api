@@ -21,20 +21,20 @@ export class PedidosController {
 
   static async crear(req: AuthedRequest, res: Response) {
     const org_id = (req as any).org_id;
-    const { cliente_id, descripcion, fecha_entrega_estimada, saldo_pendiente, monto_total, sucursal_id } = req.body;
+    const { cliente_id, descripcion, fecha_entrega_estimada, saldo_pendiente, monto_total, sucursal_id, descuento_aplicado } = req.body;
     
     const data = await PedidosService.crearPedido(org_id, {
-      cliente_id, descripcion, fecha_entrega_estimada, saldo_pendiente, monto_total, sucursal_id
+      cliente_id, descripcion, fecha_entrega_estimada, saldo_pendiente, monto_total, sucursal_id, descuento_aplicado
     });
     res.status(201).json(data);
   }
 
   static async actualizar(req: AuthedRequest, res: Response) {
     const { id } = req.params;
-    const { estado, descripcion, monto_total, saldo_pendiente, fecha_entrega_estimada, sucursal_id } = req.body;
+    const { estado, descripcion, monto_total, saldo_pendiente, fecha_entrega_estimada, sucursal_id, descuento_aplicado } = req.body;
 
     const data = await PedidosService.actualizarPedido(id, {
-      estado, descripcion, monto_total, saldo_pendiente, fecha_entrega_estimada, sucursal_id
+      estado, descripcion, monto_total, saldo_pendiente, fecha_entrega_estimada, sucursal_id, descuento_aplicado
     });
     res.json(data);
   }
