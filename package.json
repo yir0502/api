@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "build": "tsc -p .",
+    "postinstall": "npm run build",
     "start:prod": "node dist/server.js"
   },
   "dependencies": {
