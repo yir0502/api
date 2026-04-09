@@ -111,22 +111,30 @@ export class PedidosService {
 
         // Solo otorgar cashback si el cliente es apto para promociones
         if (cliente && cliente.apto_promociones !== false) {
-          const contadorAct = Number(cliente.contador_servicios) || 0;
           const monederoAct = Number(cliente.monedero) || 0;
 
-          const nuevoContador = contadorAct + 1;
-          // Cada 4 servicios gana $30, el resto $10
-          const ganancia = (nuevoContador % 4 === 0) ? 30 : 10;
+          if (monederoAct >= 60) {
+            // Límite alcanzado: no acumula más servicios ni saldo.
+            updates.puntos_generados = true;
+          } else {
+            const contadorAct = Number(cliente.contador_servicios) || 0;
+            const nuevoContador = contadorAct + 1;
+            // Cada 4 servicios gana $30, el resto $10
+            const ganancia = (nuevoContador % 4 === 0) ? 30 : 10;
+            
+            // Topar el saldo a máximo 60
+            const nuevoMonedero = Math.min(60, monederoAct + ganancia);
 
-          await supabaseAdmin
-            .from('clientes')
-            .update({
-              contador_servicios: nuevoContador,
-              monedero: monederoAct + ganancia,
-            })
-            .eq('id', currentPedido.cliente_id);
+            await supabaseAdmin
+              .from('clientes')
+              .update({
+                contador_servicios: nuevoContador,
+                monedero: nuevoMonedero,
+              })
+              .eq('id', currentPedido.cliente_id);
 
-          updates.puntos_generados = true;
+            updates.puntos_generados = true;
+          }
         }
       }
     }
