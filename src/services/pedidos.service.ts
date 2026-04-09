@@ -61,6 +61,14 @@ export class PedidosService {
       .single();
 
     if (error) throw error;
+
+    // Actualizar la última visita del cliente
+    if (payload.cliente_id) {
+      await supabaseAdmin
+        .from('clientes')
+        .update({ ultima_visita: new Date().toISOString() })
+        .eq('id', payload.cliente_id);
+    }
     
     // Descontar monedero si se aplicó
     if (payload.descuento_aplicado && payload.descuento_aplicado > 0 && payload.cliente_id) {
