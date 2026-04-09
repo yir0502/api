@@ -141,6 +141,7 @@ r.post('/', validateRequest(ClienteSchema), asyncHandler(async (req: AuthedReque
     direccion,
     permite_whatsapp: permite_whatsapp ?? true,
     frecuencia_recordatorio: frecuencia_recordatorio ?? 15,
+    apto_promociones: req.body.apto_promociones ?? false,
     ultima_visita: new Date().toISOString()
   };
 

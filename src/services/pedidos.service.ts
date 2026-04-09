@@ -94,28 +94,30 @@ export class PedidosService {
         .single();
         
       if (currentPedido?.cliente_id && !currentPedido.puntos_generados) {
-        // Obtener cliente actual para revisar su contador
+        // Obtener cliente y verificar que sea apto para promociones
         const { data: cliente } = await supabaseAdmin
           .from('clientes')
-          .select('contador_servicios, monedero')
+          .select('contador_servicios, monedero, apto_promociones')
           .eq('id', currentPedido.cliente_id)
           .single();
-          
-        if (cliente) {
+
+        // Solo otorgar cashback si el cliente es apto para promociones
+        if (cliente && cliente.apto_promociones !== false) {
           const contadorAct = Number(cliente.contador_servicios) || 0;
           const monederoAct = Number(cliente.monedero) || 0;
-          
+
           const nuevoContador = contadorAct + 1;
+          // Cada 4 servicios gana $30, el resto $10
           const ganancia = (nuevoContador % 4 === 0) ? 30 : 10;
-          
+
           await supabaseAdmin
             .from('clientes')
-            .update({ 
+            .update({
               contador_servicios: nuevoContador,
-              monedero: monederoAct + ganancia 
+              monedero: monederoAct + ganancia,
             })
             .eq('id', currentPedido.cliente_id);
-            
+
           updates.puntos_generados = true;
         }
       }
