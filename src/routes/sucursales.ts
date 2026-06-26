@@ -130,6 +130,9 @@ r.put('/:id', async (req, res) => {
 // DELETE /sucursales/:id[?soft=1]
 r.delete('/:id', async (req: AuthedRequest, res) => {
     try {
+        const org_id = (req as any).org_id;
+        if (!org_id) return res.status(401).json({ error: 'No org' });
+
         const { id } = req.params;
         const { soft } = req.query as { soft?: string };
 
