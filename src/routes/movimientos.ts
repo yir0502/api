@@ -27,14 +27,15 @@ async function reconciliarPedido(pedido_id: string, org_id: string) {
 
   const { data: ped } = await supabaseAdmin
     .from('pedidos')
-    .select('monto_total')
+    .select('monto_total, descuento_aplicado')
     .eq('id', pedido_id)
     .eq('org_id', org_id)
     .maybeSingle();
 
   if (!ped) return;
 
-  const nuevoSaldo = Math.max(0, Number(ped.monto_total) - abonoNeto);
+  const descuento = Number(ped.descuento_aplicado) || 0;
+  const nuevoSaldo = Math.max(0, Number(ped.monto_total) - descuento - abonoNeto);
 
   await supabaseAdmin
     .from('pedidos')
@@ -159,7 +160,7 @@ r.delete('/:id', asyncHandler(async (req: AuthedRequest, res: any) => {
 
   const { data: oldMov } = await supabaseAdmin.from('movimientos').select('pedido_id').eq('id', id).eq('org_id', org_id).maybeSingle();
 
-  const { error } = await supabaseAdmin.from('movimientos').delete().eq('id', id);
+  const { error } = await supabaseAdmin.from('movimientos').delete().eq('id', id).eq('org_id', org_id);
   if (error) throw error;
 
   if (oldMov?.pedido_id) {

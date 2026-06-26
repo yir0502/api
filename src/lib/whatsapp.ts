@@ -15,8 +15,11 @@ export const whatsappService = {
     }
 
     // Limpieza del número: Meta requiere código de país sin '+' (ej: 52155...)
-    // Asegúrate de que tus clientes se guarden con código de país (ej: 52...)
-    const cleanNumber = to.replace(/\D/g, ''); 
+    // Si el número guardado tiene 10 dígitos, le prepensamos el código de México (52)
+    let cleanNumber = to.replace(/\D/g, ''); 
+    if (cleanNumber.length === 10) {
+      cleanNumber = '52' + cleanNumber;
+    }
 
     try {
       const response = await fetch(`https://graph.facebook.com/${VERSION}/${PHONE_ID}/messages`, {

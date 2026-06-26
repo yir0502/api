@@ -104,7 +104,7 @@ r.post('/', async (req, res) => {
 // PUT /sucursales/:id  { nombre?, activo? }
 r.put('/:id', async (req, res) => {
     try {
-        const org_id = (req as any).user?.org_id;
+        const org_id = (req as any).org_id;
         if (!org_id) return res.status(401).json({ error: 'No org' });
 
         const { id } = req.params;
@@ -139,6 +139,7 @@ r.delete('/:id', async (req: AuthedRequest, res) => {
                 .from('sucursales')
                 .update({ activo: false })
                 .eq('id', id)
+                .eq('org_id', org_id);
             if (error) return res.status(400).json({ error: error.message });
             return res.json({ ok: true, soft: true });
         }
@@ -148,6 +149,7 @@ r.delete('/:id', async (req: AuthedRequest, res) => {
             .from('sucursales')
             .delete()
             .eq('id', id)
+            .eq('org_id', org_id);
         if (error) return res.status(400).json({ error: error.message });
 
         res.json({ ok: true });

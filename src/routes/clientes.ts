@@ -9,6 +9,23 @@ import { asyncHandler } from '../lib/error';
 
 const r = Router();
 
+function normalizarYValidarTelefono(tel: string): string {
+  if (!tel) {
+    throw new Error('El número de teléfono es obligatorio');
+  }
+  let clean = tel.replace(/\D/g, '');
+  if (clean.startsWith('52') && clean.length === 12) {
+    clean = clean.substring(2);
+  }
+  if (clean.length === 11 && clean.startsWith('1')) {
+    clean = clean.substring(1);
+  }
+  if (clean.length !== 10) {
+    throw new Error('El número de teléfono debe tener 10 dígitos (puedes incluir prefijo +52, espacios o guiones)');
+  }
+  return clean;
+}
+
 // Middleware de seguridad: Usuario autenticado y miembro de la organización
 r.use(requireAuth, requireMembership);
 
@@ -113,6 +130,25 @@ r.get('/stats', asyncHandler(async (req: AuthedRequest, res: any) => {
   });
 }));
 
+// --- 2.5. OBTENER CLIENTE POR ID ---
+r.get('/:id', asyncHandler(async (req: AuthedRequest, res: any) => {
+  const org_id = (req as any).org_id;
+  const { id } = req.params;
+
+  const { data, error } = await supabaseAdmin
+    .from('clientes')
+    .select('*')
+    .eq('id', id)
+    .eq('org_id', org_id)
+    .single();
+
+  if (error) {
+    if (error.code === 'PGRST116') return res.status(404).json({ error: 'Cliente no encontrado' });
+    throw error;
+  }
+  res.json(data);
+}));
+
 // --- 3. CREAR CLIENTE ---
 r.post('/', validateRequest(ClienteSchema), asyncHandler(async (req: AuthedRequest, res: any) => {
   const org_id = (req as any).org_id;
@@ -121,12 +157,19 @@ r.post('/', validateRequest(ClienteSchema), asyncHandler(async (req: AuthedReque
   if (!org_id) return res.status(401).json({ error: 'La organización es obligatoria' });
   if (!nombre) return res.status(400).json({ error: 'El nombre es obligatorio' });
 
+  let telNormalizado: string;
+  try {
+    telNormalizado = normalizarYValidarTelefono(telefono);
+  } catch (e: any) {
+    return res.status(400).json({ error: e.message });
+  }
+
   // validar si el numero de teléfono ya existe para la misma org
   const { data: existing, error: existError } = await supabaseAdmin
     .from('clientes')
     .select('id')
     .eq('org_id', org_id)
-    .eq('telefono', telefono);
+    .eq('telefono', telNormalizado);
 
   if (existError && existError.code !== 'PGRST116') throw existError; // PGRST116 = no encontrado
   if (existing && existing.length > 0) {
@@ -136,7 +179,7 @@ r.post('/', validateRequest(ClienteSchema), asyncHandler(async (req: AuthedReque
   const payload = {
     org_id,
     nombre,
-    telefono,
+    telefono: telNormalizado,
     email,
     direccion,
     permite_whatsapp: permite_whatsapp ?? true,
@@ -161,6 +204,30 @@ r.put('/:id', validateRequest(ClienteUpdateSchema), asyncHandler(async (req: Aut
   const { id } = req.params;
   
   const { id: _, org_id: __, created_at, ...updates } = req.body;
+
+  if (updates.telefono) {
+    let telNormalizado: string;
+    try {
+      telNormalizado = normalizarYValidarTelefono(updates.telefono);
+    } catch (e: any) {
+      return res.status(400).json({ error: e.message });
+    }
+
+    // Validar si el numero de teléfono ya existe para la misma org en otro cliente
+    const { data: existing, error: existError } = await supabaseAdmin
+      .from('clientes')
+      .select('id')
+      .eq('org_id', org_id)
+      .eq('telefono', telNormalizado)
+      .neq('id', id);
+
+    if (existError && existError.code !== 'PGRST116') throw existError;
+    if (existing && existing.length > 0) {
+      return res.status(400).json({ error: 'El número de teléfono ya está registrado para otro cliente' });
+    }
+
+    updates.telefono = telNormalizado;
+  }
 
   const { data, error } = await supabaseAdmin
     .from('clientes')

@@ -13,7 +13,7 @@ r.get('/', async (req: AuthedRequest, res) => {
   
 
 const org_id =
-  (req as any).user?.org_id
+  (req as any).org_id
   || (req.query.org_id as string)              // permite ?org_id=...
   || process.env.DEFAULT_ORG_ID;               // fallback de dev
 
@@ -45,11 +45,13 @@ r.post('/', async (req: AuthedRequest, res) => {
 
 // PUT /categorias/:id
 r.put('/:id', async (req: AuthedRequest, res) => {
+  const org_id = (req as any).org_id;
   const { id } = req.params;
   const { data, error } = await supabaseAdmin
     .from('categorias')
     .update(req.body)
     .eq('id', id)
+    .eq('org_id', org_id)
     .select()
     .single();
   if (error) return res.status(400).json({ error: error.message });
@@ -60,11 +62,13 @@ r.put('/:id', async (req: AuthedRequest, res) => {
 r.delete('/:id', async (req: AuthedRequest, res) => {
   console.log('DELETE /categorias/:id', req.params);
   
+  const org_id = (req as any).org_id;
   const { id } = req.params;
   const { error } = await supabaseAdmin
     .from('categorias')
     .delete()
-    .eq('id', id);
+    .eq('id', id)
+    .eq('org_id', org_id);
   if (error) return res.status(400).json({ error: error.message });
   res.json({ ok: true });
 });

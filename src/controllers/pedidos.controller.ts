@@ -19,6 +19,13 @@ export class PedidosController {
     res.json(result);
   }
 
+  static async obtener(req: AuthedRequest, res: Response) {
+    const org_id = (req as any).org_id;
+    const { id } = req.params;
+    const data = await PedidosService.obtenerPedido(id, org_id);
+    res.json(data);
+  }
+
   static async crear(req: AuthedRequest, res: Response) {
     const org_id = (req as any).org_id;
     const { cliente_id, descripcion, fecha_entrega_estimada, saldo_pendiente, monto_total, sucursal_id, descuento_aplicado } = req.body;
@@ -30,41 +37,46 @@ export class PedidosController {
   }
 
   static async actualizar(req: AuthedRequest, res: Response) {
+    const org_id = (req as any).org_id;
     const { id } = req.params;
     const { estado, descripcion, monto_total, saldo_pendiente, fecha_entrega_estimada, sucursal_id, descuento_aplicado } = req.body;
 
-    const data = await PedidosService.actualizarPedido(id, {
+    const data = await PedidosService.actualizarPedido(id, org_id, {
       estado, descripcion, monto_total, saldo_pendiente, fecha_entrega_estimada, sucursal_id, descuento_aplicado
     });
     res.json(data);
   }
 
   static async subirEvidencia(req: any, res: Response) {
+    const org_id = req.org_id;
     const { id } = req.params; 
     const file = req.file;
     const { tipo, nota } = req.body; 
 
     if (!file) return res.status(400).json({ error: 'No se subió ningún archivo' });
 
-    const dbData = await PedidosService.subirEvidencia(id, file.buffer, tipo, nota);
+    const dbData = await PedidosService.subirEvidencia(id, org_id, file.buffer, tipo, nota);
     res.status(201).json(dbData);
   }
 
   static async listarEvidencias(req: AuthedRequest, res: Response) {
+    const org_id = (req as any).org_id;
     const { id } = req.params;
-    const data = await PedidosService.obtenerEvidencias(id);
+    const data = await PedidosService.obtenerEvidencias(id, org_id);
     res.json(data);
   }
 
   static async eliminar(req: AuthedRequest, res: Response) {
+    const org_id = (req as any).org_id;
     const { id } = req.params;
-    await PedidosService.eliminarPedido(id);
+    await PedidosService.eliminarPedido(id, org_id);
     res.json({ ok: true });
   }
 
   static async eliminarEvidencia(req: AuthedRequest, res: Response) {
+    const org_id = (req as any).org_id;
     const { id, evidenciaId } = req.params;
-    await PedidosService.eliminarEvidencia(id, evidenciaId);
+    await PedidosService.eliminarEvidencia(id, org_id, evidenciaId);
     res.json({ ok: true });
   }
 }

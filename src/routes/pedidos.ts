@@ -19,6 +19,9 @@ r.use(requireAuth);
 // 1. LISTAR PEDIDOS
 r.get('/', requireMembership, asyncHandler(PedidosController.listar));
 
+// 1.5 OBTENER PEDIDO POR ID
+r.get('/:id', requireMembership, asyncHandler(PedidosController.obtener));
+
 // 2. CREAR PEDIDO
 r.post('/', requireMembership, validateRequest(PedidoSchema), asyncHandler(PedidosController.crear));
 
