@@ -116,6 +116,25 @@ export class PedidosService {
 
     if (!currentPedido) throw new Error('Pedido no encontrado o sin acceso');
 
+    // Ajustar descuento si el monto_total es menor que el descuento_aplicado
+    if (updates.monto_total !== undefined && currentPedido.descuento_aplicado > 0) {
+      const nuevoTotal = Number(updates.monto_total) || 0;
+      const descOriginal = Number(currentPedido.descuento_aplicado) || 0;
+      if (nuevoTotal < descOriginal) {
+        const diferencia = descOriginal - nuevoTotal;
+        if (currentPedido.cliente_id) {
+          const { data: cliente } = await supabaseAdmin.from('clientes').select('monedero').eq('id', currentPedido.cliente_id).single();
+          if (cliente) {
+            const monederoAct = Number(cliente.monedero) || 0;
+            const nuevoMonedero = Math.min(60, monederoAct + diferencia);
+            await supabaseAdmin.from('clientes').update({ monedero: nuevoMonedero }).eq('id', currentPedido.cliente_id);
+          }
+        }
+        updates.descuento_aplicado = nuevoTotal;
+        updates.saldo_pendiente = 0;
+      }
+    }
+
     const estadoAnterior = currentPedido.estado;
     const nuevoEstado = updates.estado || estadoAnterior;
 

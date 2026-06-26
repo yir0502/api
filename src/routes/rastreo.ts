@@ -95,7 +95,7 @@ r.post('/:folio/canjear', async (req, res) => {
     // 1. Obtener el pedido con datos del cliente
     const { data: pedido, error: pedidoError } = await supabaseAdmin
       .from('pedidos')
-      .select('id, estado, saldo_pendiente, promo_canjeada, cliente_id')
+      .select('id, estado, saldo_pendiente, promo_canjeada, cliente_id, monto_total')
       .ilike('folio', folio)
       .maybeSingle();
 
@@ -139,10 +139,11 @@ r.post('/:folio/canjear', async (req, res) => {
       return res.status(400).json({ error: 'No tienes saldo acumulado disponible.' });
     }
 
-    // 7. Calcular descuento (solo lo necesario, no más del saldo pendiente)
+    // 7. Calcular descuento (si el total es 0, permitimos pre-canjear todo el monedero)
+    const esPreCanje = (Number(pedido.monto_total) === 0);
     const saldoPendiente = Number(pedido.saldo_pendiente) || 0;
-    const descuento = Math.min(monedero, saldoPendiente);
-    const nuevoSaldo = Math.max(0, saldoPendiente - descuento);
+    const descuento = esPreCanje ? monedero : Math.min(monedero, saldoPendiente);
+    const nuevoSaldo = esPreCanje ? 0 : Math.max(0, saldoPendiente - descuento);
     const monederoRestante = monedero - descuento;
 
     // 8. Actualizar pedido: aplicar descuento y marcar como canjeado
