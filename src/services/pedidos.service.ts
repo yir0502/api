@@ -68,7 +68,14 @@ export class PedidosService {
 
   static async crearPedido(org_id: string, payload: any) {
     const folio = this.generarFolio();
-    const dataToInsert = { ...payload, org_id, folio, estado: 'recibido' };
+    const hasDiscount = payload.descuento_aplicado && Number(payload.descuento_aplicado) > 0;
+    const dataToInsert = { 
+      ...payload, 
+      org_id, 
+      folio, 
+      estado: 'recibido',
+      promo_canjeada: hasDiscount ? true : (payload.promo_canjeada ?? false)
+    };
 
     const { data, error } = await supabaseAdmin
       .from('pedidos')
@@ -155,7 +162,8 @@ export class PedidosService {
     }
 
     // Si el pedido se cancela, devolver descuento_aplicado al monedero
-    if (nuevoEstado === 'cancelado' && estadoAnterior !== 'cancelado' && currentPedido.promo_canjeada && currentPedido.descuento_aplicado > 0 && currentPedido.cliente_id) {
+    const teniaPromo = currentPedido.promo_canjeada || Number(currentPedido.descuento_aplicado) > 0;
+    if (nuevoEstado === 'cancelado' && estadoAnterior !== 'cancelado' && teniaPromo && Number(currentPedido.descuento_aplicado) > 0 && currentPedido.cliente_id) {
         const { data: cliente } = await supabaseAdmin.from('clientes').select('monedero').eq('id', currentPedido.cliente_id).single();
         if (cliente) {
             const monederoAct = Number(cliente.monedero) || 0;

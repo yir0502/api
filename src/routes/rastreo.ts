@@ -75,7 +75,7 @@ r.get('/:folio', async (req, res) => {
             servicios_en_ciclo: serviciosEnCiclo,
             servicios_para_proxima: serviciosParaProxima,
             proxima_ganancia: proximaGanancia,
-            puede_canjear: clienteData.monedero > 0 && ESTADOS_ACTIVOS.includes(pedido.estado) && !pedido.promo_canjeada,
+            puede_canjear: clienteData.monedero > 0 && ESTADOS_ACTIVOS.includes(pedido.estado) && !pedido.promo_canjeada && (Number(pedido.monto_total) === 0 || Number(pedido.saldo_pendiente) > 0),
           }
         : { apto: false },
     };
@@ -139,10 +139,24 @@ r.post('/:folio/canjear', async (req, res) => {
       return res.status(400).json({ error: 'No tienes saldo acumulado disponible.' });
     }
 
-    // 7. Calcular descuento (si el total es 0, permitimos pre-canjear todo el monedero)
     const esPreCanje = (Number(pedido.monto_total) === 0);
     const saldoPendiente = Number(pedido.saldo_pendiente) || 0;
+
+    // Validación extra: si el pedido ya tiene precio y está completamente pagado
+    if (!esPreCanje && saldoPendiente <= 0) {
+      return res.status(400).json({
+        error: `Tu pedido ya está pagado en su totalidad. Tu saldo de $${monedero.toFixed(2)} MXN se conservará intacto para tu próximo pedido.`
+      });
+    }
+
+    // 7. Calcular descuento
     const descuento = esPreCanje ? monedero : Math.min(monedero, saldoPendiente);
+    if (descuento <= 0) {
+      return res.status(400).json({
+        error: 'No hay saldo pendiente disponible para aplicar descuento en este pedido.'
+      });
+    }
+
     const nuevoSaldo = esPreCanje ? 0 : Math.max(0, saldoPendiente - descuento);
     const monederoRestante = monedero - descuento;
 
