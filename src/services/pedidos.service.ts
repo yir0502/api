@@ -1,5 +1,6 @@
 import sharp from 'sharp';
 import { supabaseAdmin } from '../lib/supabase';
+import { escapeLike } from '../lib/validate';
 
 export class PedidosService {
   
@@ -30,13 +31,16 @@ export class PedidosService {
     }
 
     if (q) {
-      query = query.ilike('folio', `%${q}%`);
+      query = query.ilike('folio', `%${escapeLike(String(q))}%`);
     }
 
-    if (limit && offset) {
-      query = query.range(offset, offset + limit - 1);
-    } else if (limit) {
-      query = query.limit(limit);
+    const lim = limit !== undefined && Number.isFinite(limit) ? Math.min(Math.max(0, Math.floor(limit)), 100) : undefined;
+    const off = offset !== undefined && Number.isFinite(offset) ? Math.max(0, Math.floor(offset)) : undefined;
+
+    if (lim !== undefined && lim > 0 && off !== undefined) {
+      query = query.range(off, off + lim - 1);
+    } else if (lim !== undefined && lim > 0) {
+      query = query.limit(lim);
     }
 
     const { data, error } = await query;
@@ -68,6 +72,27 @@ export class PedidosService {
 
   static async crearPedido(org_id: string, payload: any) {
     const folio = this.generarFolio();
+
+    if (payload.cliente_id) {
+      const { data: cliente } = await supabaseAdmin
+        .from('clientes')
+        .select('id')
+        .eq('id', payload.cliente_id)
+        .eq('org_id', org_id)
+        .maybeSingle();
+      if (!cliente) throw new Error('cliente_id inválido');
+    }
+
+    if (payload.sucursal_id) {
+      const { data: sucursal } = await supabaseAdmin
+        .from('sucursales')
+        .select('id')
+        .eq('id', payload.sucursal_id)
+        .eq('org_id', org_id)
+        .maybeSingle();
+      if (!sucursal) throw new Error('sucursal_id inválido');
+    }
+
     const hasDiscount = payload.descuento_aplicado && Number(payload.descuento_aplicado) > 0;
     const dataToInsert = { 
       ...payload, 
@@ -90,23 +115,27 @@ export class PedidosService {
       await supabaseAdmin
         .from('clientes')
         .update({ ultima_visita: new Date().toISOString() })
-        .eq('id', payload.cliente_id);
+        .eq('id', payload.cliente_id)
+        .eq('org_id', org_id);
     }
     
     // Descontar monedero si se aplicó
     if (payload.descuento_aplicado && payload.descuento_aplicado > 0 && payload.cliente_id) {
+      const descuentoAplicado = Math.min(50, Number(payload.descuento_aplicado) || 0);
       const { data: cliente } = await supabaseAdmin
         .from('clientes')
         .select('monedero')
         .eq('id', payload.cliente_id)
+        .eq('org_id', org_id)
         .single();
         
       if (cliente) {
-        const monederoAct = Number(cliente.monedero) || 0;
+        const monederoAct = Math.min(50, Number(cliente.monedero) || 0);
         await supabaseAdmin
           .from('clientes')
-          .update({ monedero: Math.max(0, monederoAct - payload.descuento_aplicado) })
-          .eq('id', payload.cliente_id);
+          .update({ monedero: Math.max(0, monederoAct - descuentoAplicado) })
+          .eq('id', payload.cliente_id)
+          .eq('org_id', org_id);
       }
     }
 
@@ -116,29 +145,52 @@ export class PedidosService {
   static async actualizarPedido(id: string, org_id: string, updates: any) {
     const { data: currentPedido } = await supabaseAdmin
       .from('pedidos')
-      .select('cliente_id, puntos_generados, estado, promo_canjeada, descuento_aplicado')
+      .select('cliente_id, puntos_generados, estado, promo_canjeada, descuento_aplicado, monto_total, saldo_pendiente')
       .eq('id', id)
       .eq('org_id', org_id)
       .single();
 
     if (!currentPedido) throw new Error('Pedido no encontrado o sin acceso');
 
-    // Ajustar descuento si el monto_total es menor que el descuento_aplicado
-    if (updates.monto_total !== undefined && currentPedido.descuento_aplicado > 0) {
+    if (updates.sucursal_id) {
+      const { data: sucursal } = await supabaseAdmin
+        .from('sucursales')
+        .select('id')
+        .eq('id', updates.sucursal_id)
+        .eq('org_id', org_id)
+        .maybeSingle();
+      if (!sucursal) throw new Error('sucursal_id inválido');
+    }
+
+    // Ajustar descuento y saldo pendiente cuando existe un descuento_aplicado (incluyendo pre-canje)
+    if (updates.monto_total !== undefined && Number(currentPedido.descuento_aplicado) > 0) {
       const nuevoTotal = Number(updates.monto_total) || 0;
-      const descOriginal = Number(currentPedido.descuento_aplicado) || 0;
-      if (nuevoTotal < descOriginal) {
+      const descOriginal = Math.min(50, Number(currentPedido.descuento_aplicado) || 0);
+
+      if (nuevoTotal === 0) {
+        // El pedido sigue en espera de costo total (pre-canje): conservar intacto el descuento_aplicado
+        updates.descuento_aplicado = descOriginal;
+        updates.promo_canjeada = true;
+        updates.saldo_pendiente = 0;
+      } else if (nuevoTotal < descOriginal) {
+        // El costo real del servicio fue menor al descuento pre-canjeado: devolver la diferencia al monedero (tope $50)
         const diferencia = descOriginal - nuevoTotal;
         if (currentPedido.cliente_id) {
-          const { data: cliente } = await supabaseAdmin.from('clientes').select('monedero').eq('id', currentPedido.cliente_id).single();
+          const { data: cliente } = await supabaseAdmin.from('clientes').select('monedero').eq('id', currentPedido.cliente_id).eq('org_id', org_id).single();
           if (cliente) {
             const monederoAct = Number(cliente.monedero) || 0;
-            const nuevoMonedero = Math.min(60, monederoAct + diferencia);
-            await supabaseAdmin.from('clientes').update({ monedero: nuevoMonedero }).eq('id', currentPedido.cliente_id);
+            const nuevoMonedero = Math.min(50, monederoAct + diferencia);
+            await supabaseAdmin.from('clientes').update({ monedero: nuevoMonedero }).eq('id', currentPedido.cliente_id).eq('org_id', org_id);
           }
         }
         updates.descuento_aplicado = nuevoTotal;
         updates.saldo_pendiente = 0;
+      } else {
+        // nuevoTotal >= descOriginal: asegurar que el saldo_pendiente nunca exceda (nuevoTotal - descOriginal)
+        const maxPendienteConDescuento = Math.max(0, nuevoTotal - descOriginal);
+        const pendienteSolicitado = updates.saldo_pendiente !== undefined ? Number(updates.saldo_pendiente) : maxPendienteConDescuento;
+        updates.descuento_aplicado = descOriginal;
+        updates.saldo_pendiente = Math.max(0, Math.min(pendienteSolicitado, maxPendienteConDescuento));
       }
     }
 
@@ -147,16 +199,16 @@ export class PedidosService {
 
     // Si el pedido pasa de entregado a otro estado, revertir cashback generado
     if (estadoAnterior === 'entregado' && nuevoEstado !== 'entregado' && currentPedido.puntos_generados && currentPedido.cliente_id) {
-        const { data: cliente } = await supabaseAdmin.from('clientes').select('contador_servicios, monedero, apto_promociones').eq('id', currentPedido.cliente_id).single();
+        const { data: cliente } = await supabaseAdmin.from('clientes').select('contador_servicios, monedero, apto_promociones').eq('id', currentPedido.cliente_id).eq('org_id', org_id).single();
         if (cliente && cliente.apto_promociones !== false) {
             const contadorAct = Number(cliente.contador_servicios) || 0;
             const monederoAct = Number(cliente.monedero) || 0;
-            const ganancia = (contadorAct % 4 === 0) ? 30 : 10;
+            const ganancia = (contadorAct % 4 === 0) ? 20 : 10;
             
             const nuevoContador = Math.max(0, contadorAct - 1);
             const nuevoMonedero = Math.max(0, monederoAct - ganancia);
             
-            await supabaseAdmin.from('clientes').update({ contador_servicios: nuevoContador, monedero: nuevoMonedero }).eq('id', currentPedido.cliente_id);
+            await supabaseAdmin.from('clientes').update({ contador_servicios: nuevoContador, monedero: nuevoMonedero }).eq('id', currentPedido.cliente_id).eq('org_id', org_id);
             updates.puntos_generados = false;
         }
     }
@@ -164,11 +216,11 @@ export class PedidosService {
     // Si el pedido se cancela, devolver descuento_aplicado al monedero
     const teniaPromo = currentPedido.promo_canjeada || Number(currentPedido.descuento_aplicado) > 0;
     if (nuevoEstado === 'cancelado' && estadoAnterior !== 'cancelado' && teniaPromo && Number(currentPedido.descuento_aplicado) > 0 && currentPedido.cliente_id) {
-        const { data: cliente } = await supabaseAdmin.from('clientes').select('monedero').eq('id', currentPedido.cliente_id).single();
+        const { data: cliente } = await supabaseAdmin.from('clientes').select('monedero').eq('id', currentPedido.cliente_id).eq('org_id', org_id).single();
         if (cliente) {
             const monederoAct = Number(cliente.monedero) || 0;
-            const nuevoMonedero = Math.min(60, monederoAct + Number(currentPedido.descuento_aplicado));
-            await supabaseAdmin.from('clientes').update({ monedero: nuevoMonedero }).eq('id', currentPedido.cliente_id);
+            const nuevoMonedero = Math.min(50, monederoAct + Number(currentPedido.descuento_aplicado));
+            await supabaseAdmin.from('clientes').update({ monedero: nuevoMonedero }).eq('id', currentPedido.cliente_id).eq('org_id', org_id);
         }
         updates.promo_canjeada = false;
         updates.descuento_aplicado = 0;
@@ -176,20 +228,26 @@ export class PedidosService {
 
     // Generar cashback al entregar
     if (nuevoEstado === 'entregado' && estadoAnterior !== 'entregado') {
-      updates.fecha_entregado = new Date().toISOString();
-      if (currentPedido.cliente_id && !currentPedido.puntos_generados) {
-        const { data: cliente } = await supabaseAdmin.from('clientes').select('contador_servicios, monedero, apto_promociones').eq('id', currentPedido.cliente_id).single();
-        if (cliente && cliente.apto_promociones !== false) {
-          const monederoAct = Number(cliente.monedero) || 0;
-          if (monederoAct >= 60) {
-            updates.puntos_generados = true;
+      const nowIso = new Date().toISOString();
+      updates.fecha_entregado = nowIso;
+      if (currentPedido.cliente_id) {
+        const { data: cliente } = await supabaseAdmin.from('clientes').select('contador_servicios, monedero, apto_promociones').eq('id', currentPedido.cliente_id).eq('org_id', org_id).single();
+        if (cliente) {
+          if (!currentPedido.puntos_generados && cliente.apto_promociones !== false) {
+            const monederoAct = Number(cliente.monedero) || 0;
+            if (monederoAct >= 50) {
+              await supabaseAdmin.from('clientes').update({ monedero: 50, ultima_visita: nowIso }).eq('id', currentPedido.cliente_id).eq('org_id', org_id);
+              updates.puntos_generados = true;
+            } else {
+              const contadorAct = Number(cliente.contador_servicios) || 0;
+              const nuevoContador = contadorAct + 1;
+              const ganancia = (nuevoContador % 4 === 0) ? 20 : 10;
+              const nuevoMonedero = Math.min(50, monederoAct + ganancia);
+              await supabaseAdmin.from('clientes').update({ contador_servicios: nuevoContador, monedero: nuevoMonedero, ultima_visita: nowIso }).eq('id', currentPedido.cliente_id).eq('org_id', org_id);
+              updates.puntos_generados = true;
+            }
           } else {
-            const contadorAct = Number(cliente.contador_servicios) || 0;
-            const nuevoContador = contadorAct + 1;
-            const ganancia = (nuevoContador % 4 === 0) ? 30 : 10;
-            const nuevoMonedero = Math.min(60, monederoAct + ganancia);
-            await supabaseAdmin.from('clientes').update({ contador_servicios: nuevoContador, monedero: nuevoMonedero }).eq('id', currentPedido.cliente_id);
-            updates.puntos_generados = true;
+            await supabaseAdmin.from('clientes').update({ ultima_visita: nowIso }).eq('id', currentPedido.cliente_id).eq('org_id', org_id);
           }
         }
       }
@@ -267,24 +325,24 @@ export class PedidosService {
 
     // Revertir cashback
     if (currentPedido.puntos_generados && currentPedido.cliente_id) {
-      const { data: cliente } = await supabaseAdmin.from('clientes').select('contador_servicios, monedero, apto_promociones').eq('id', currentPedido.cliente_id).single();
+      const { data: cliente } = await supabaseAdmin.from('clientes').select('contador_servicios, monedero, apto_promociones').eq('id', currentPedido.cliente_id).eq('org_id', org_id).single();
       if (cliente && cliente.apto_promociones !== false) {
         const contadorAct = Number(cliente.contador_servicios) || 0;
         const monederoAct = Number(cliente.monedero) || 0;
-        const ganancia = (contadorAct % 4 === 0) ? 30 : 10;
+        const ganancia = (contadorAct % 4 === 0) ? 20 : 10;
         const nuevoContador = Math.max(0, contadorAct - 1);
         const nuevoMonedero = Math.max(0, monederoAct - ganancia);
-        await supabaseAdmin.from('clientes').update({ contador_servicios: nuevoContador, monedero: nuevoMonedero }).eq('id', currentPedido.cliente_id);
+        await supabaseAdmin.from('clientes').update({ contador_servicios: nuevoContador, monedero: nuevoMonedero }).eq('id', currentPedido.cliente_id).eq('org_id', org_id);
       }
     }
 
     // Revertir promo canjeada
     if (currentPedido.promo_canjeada && currentPedido.descuento_aplicado > 0 && currentPedido.cliente_id) {
-      const { data: cliente } = await supabaseAdmin.from('clientes').select('monedero').eq('id', currentPedido.cliente_id).single();
+      const { data: cliente } = await supabaseAdmin.from('clientes').select('monedero').eq('id', currentPedido.cliente_id).eq('org_id', org_id).single();
       if (cliente) {
         const monederoAct = Number(cliente.monedero) || 0;
-        const nuevoMonedero = Math.min(60, monederoAct + Number(currentPedido.descuento_aplicado));
-        await supabaseAdmin.from('clientes').update({ monedero: nuevoMonedero }).eq('id', currentPedido.cliente_id);
+        const nuevoMonedero = Math.min(50, monederoAct + Number(currentPedido.descuento_aplicado));
+        await supabaseAdmin.from('clientes').update({ monedero: nuevoMonedero }).eq('id', currentPedido.cliente_id).eq('org_id', org_id);
       }
     }
 

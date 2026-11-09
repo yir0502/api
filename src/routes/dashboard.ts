@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { supabaseAdmin } from '../lib/supabase';
 import { requireAuth, AuthedRequest } from '../lib/auth';
+import { requireMembership } from '../lib/guard';
 
 const r = Router();
-r.use(requireAuth);
+r.use(requireAuth, requireMembership);
 
 // Helper de fechas
 const iso = (d: Date) => d.toISOString().slice(0, 10);
@@ -27,11 +28,10 @@ type MovSimple = {
   fecha: string;
 };
 
-r.get('/', async (req, res) => {
+r.get('/', async (req: AuthedRequest, res) => {
   try {
     // 1. Validación y Parámetros
-    const org_id = (req.query.org_id as string) || process.env.DEFAULT_ORG_ID!;
-    if (!org_id) return res.status(400).json({ error: 'org_id requerido' });
+    const org_id = req.org_id!;
 
     const include = String(req.query.include || 'mes,recientes').split(',').map(s => s.trim());
     const limitRec = Math.max(1, Math.min(50, Number(req.query.limit_recientes) || 5));
@@ -217,7 +217,7 @@ r.get('/', async (req, res) => {
 
   } catch (e: any) {
     console.error('Error dashboard:', e);
-    res.status(500).json({ error: e?.message || 'server error' });
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
 

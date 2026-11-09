@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { supabaseAnon } from './supabase';
 
-export type AuthedRequest = Request & { user?: { id: string; email?: string } };
+export type AuthedRequest = Request & { user?: { id: string; email?: string }; org_id?: string };
 
 export async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
   const auth = req.headers.authorization || '';

@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { supabaseAdmin } from '../lib/supabase';
 import { requireAuth, AuthedRequest } from '../lib/auth';
 import { requireMembership } from '../lib/guard';
+import { escapeLike } from '../lib/validate';
 
 const r = Router();
 r.use(requireAuth, requireMembership);
@@ -19,7 +20,7 @@ type Sucursal = {
 // GET /sucursales?activo=1&q=cent&limit=20&offset=0
 r.get('/', async (req: AuthedRequest, res) => {
     try {
-        const org_id = (req as any).org_id as string;
+        const org_id = req.org_id!;
 
         if (!org_id) return res.status(401).json({ error: 'No org' });
 
@@ -41,28 +42,31 @@ r.get('/', async (req: AuthedRequest, res) => {
 
         if (q && String(q).trim()) {
             // búsqueda por nombre (ilike)
-            qSuc = qSuc.ilike('nombre', `%${String(q).trim()}%`);
+            qSuc = qSuc.ilike('nombre', `%${escapeLike(String(q).trim())}%`);
         }
 
-        const lim = limit ? Number(limit) : undefined;
-        const off = offset ? Number(offset) : undefined;
-        if (lim !== undefined && off !== undefined) {
+        const rawLim = limit !== undefined ? Number(limit) : undefined;
+        const rawOff = offset !== undefined ? Number(offset) : undefined;
+        const lim = rawLim !== undefined && Number.isFinite(rawLim) ? Math.min(Math.max(0, Math.floor(rawLim)), 100) : undefined;
+        const off = rawOff !== undefined && Number.isFinite(rawOff) ? Math.max(0, Math.floor(rawOff)) : undefined;
+        if (lim !== undefined && lim > 0 && off !== undefined) {
             qSuc = qSuc.range(off, off + lim - 1);
         }
 
         const { data, error } = await qSuc;
-        if (error) return res.status(400).json({ error: error.message });
+        if (error) return res.status(400).json({ error: 'No se pudo completar la operación' });
 
         res.json((data || []) as Sucursal[]);
     } catch (e: any) {
-        res.status(500).json({ error: e?.message || 'server error' });
+        console.error(e);
+        res.status(500).json({ error: 'Error interno del servidor' });
     }
 });
 
 // POST /sucursales  { nombre, activo? }
-r.post('/', async (req, res) => {
+r.post('/', async (req: AuthedRequest, res) => {
     try {
-        const org_id = (req as any)?.org_id;
+        const org_id = req.org_id!;
         if (!org_id) return res.status(400).json({ error: 'El usuario no pertenece a una organización' });
 
         const { nombre, activo } = req.body || {};
@@ -94,17 +98,18 @@ r.post('/', async (req, res) => {
             .select()
             .single();
 
-        if (error) return res.status(400).json({ error: error.message });
+        if (error) return res.status(400).json({ error: 'No se pudo completar la operación' });
         res.json(data);
     } catch (e: any) {
-        res.status(500).json({ error: e?.message || 'server error' });
+        console.error(e);
+        res.status(500).json({ error: 'Error interno del servidor' });
     }
 });
 
 // PUT /sucursales/:id  { nombre?, activo? }
-r.put('/:id', async (req, res) => {
+r.put('/:id', async (req: AuthedRequest, res) => {
     try {
-        const org_id = (req as any).org_id;
+        const org_id = req.org_id!;
         if (!org_id) return res.status(401).json({ error: 'No org' });
 
         const { id } = req.params;
@@ -120,17 +125,18 @@ r.put('/:id', async (req, res) => {
             .select()
             .single();
 
-        if (error) return res.status(400).json({ error: error.message });
+        if (error) return res.status(400).json({ error: 'No se pudo completar la operación' });
         res.json(data);
     } catch (e: any) {
-        res.status(500).json({ error: e?.message || 'server error' });
+        console.error(e);
+        res.status(500).json({ error: 'Error interno del servidor' });
     }
 });
 
 // DELETE /sucursales/:id[?soft=1]
 r.delete('/:id', async (req: AuthedRequest, res) => {
     try {
-        const org_id = (req as any).org_id;
+        const org_id = req.org_id!;
         if (!org_id) return res.status(401).json({ error: 'No org' });
 
         const { id } = req.params;
@@ -143,7 +149,7 @@ r.delete('/:id', async (req: AuthedRequest, res) => {
                 .update({ activo: false })
                 .eq('id', id)
                 .eq('org_id', org_id);
-            if (error) return res.status(400).json({ error: error.message });
+            if (error) return res.status(400).json({ error: 'No se pudo completar la operación' });
             return res.json({ ok: true, soft: true });
         }
 
@@ -153,11 +159,12 @@ r.delete('/:id', async (req: AuthedRequest, res) => {
             .delete()
             .eq('id', id)
             .eq('org_id', org_id);
-        if (error) return res.status(400).json({ error: error.message });
+        if (error) return res.status(400).json({ error: 'No se pudo completar la operación' });
 
         res.json({ ok: true });
     } catch (e: any) {
-        res.status(500).json({ error: e?.message || 'server error' });
+        console.error(e);
+        res.status(500).json({ error: 'Error interno del servidor' });
     }
 });
 

@@ -5,43 +5,42 @@ const r = Router();
 
 // POST /auth/login { email, password }
 r.post('/login', async (req, res) => {
-    console.log('nuevo inicio de sesiion:', req.body);
-    
     const { email, password } = req.body || {};
     if (!email || !password) return res.status(400).json({ error: 'email y password requeridos' });
 
     // 1. Iniciar sesión con Supabase
     const { data, error } = await supabaseAnon.auth.signInWithPassword({ email, password });
-    if (error) return res.status(401).json({ error: error.message });
+    if (error) {
+        console.error('Error de autenticación:', error);
+        return res.status(401).json({ error: 'Credenciales inválidas' });
+    }
 
     const user = data.user;
-    
-    // **2. Obtener el org_id de la tabla organizacion_miembros**
-    let orgId = null;
+
+    // **2. Obtener todas las organizaciones del usuario**
+    let orgIds: string[] = [];
 
     if (user) {
-        // Ejecutar la consulta en la tabla 'organizacion_miembros'
         const { data: memberData, error: memberError } = await supabaseAnon
             .from('organizacion_miembros')
-            .select('org_id') // Selecciona solo la columna org_id
-            .eq('user_id', user.id) // Filtra por el ID del usuario
-            .limit(1) // Asume que un usuario solo pertenece a una organización (o toma la primera)
-            .single(); // Espera un único registro
+            .select('org_id')
+            .eq('user_id', user.id);
 
-        if (memberError && memberError.code !== 'PGRST116') { // 'PGRST116' es para No Rows
-            console.error('Error al obtener org_id:', memberError);
-            // Puedes decidir si este error debe impedir el login o si solo no se devuelve el org_id
-            // Por ahora, solo se registra el error y se continúa.
+        if (memberError) {
+            console.error('Error al obtener org_ids:', memberError);
         } else if (memberData) {
-            orgId = memberData.org_id;
+            orgIds = memberData
+                .map((m: any) => m.org_id)
+                .filter((id: any): id is string => Boolean(id));
         }
     }
 
-    // 3. Devolver la respuesta con el access_token, user y el org_id
+    // 3. Devolver la respuesta con el access_token, user mínimo y las organizaciones
     return res.json({
         access_token: data.session?.access_token,
-        user: user,
-        org_id: orgId // Agregamos la información de la organización
+        user: user ? { id: user.id, email: user.email } : user,
+        org_id: orgIds[0] || null,
+        org_ids: orgIds
     });
 });
 

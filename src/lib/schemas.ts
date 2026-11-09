@@ -50,7 +50,9 @@ export const ClienteSchema = z.object({
     permite_whatsapp: z.boolean().optional(),
     frecuencia_recordatorio: z.number().int().min(0).optional(),
     fecha_ultima_promo: z.string().optional().nullable(),
+    ultimo_recordatorio_at: z.string().optional().nullable(),
     invitaciones_enviadas: z.number().int().min(0).optional(),
+    monedero: z.number().min(0).max(50).optional(),
     apto_promociones: z.boolean().optional().default(false),
   })
 });

@@ -46,7 +46,7 @@ async function reconciliarPedido(pedido_id: string, org_id: string) {
 
 // GET /movimientos
 r.get('/', asyncHandler(async (req: AuthedRequest, res: any) => {
-  const org_id = (req as any).org_id as string;
+  const org_id = req.org_id!;
   const { desde, hasta, tipo, categoria_id, metodo_pago, sucursal_id, q, limit, offset, pedido_id } = req.query;
 
   let qmov = supabaseAdmin
@@ -64,9 +64,11 @@ r.get('/', asyncHandler(async (req: AuthedRequest, res: any) => {
 
   qmov = qmov.order('fecha', { ascending: false }).order('created_at', { ascending: false });
 
-  const lim = limit ? Number(limit) : undefined;
-  const off = offset ? Number(offset) : undefined;
-  if (lim !== undefined && off !== undefined) qmov = qmov.range(off, off + lim - 1);
+  const rawLim = limit !== undefined ? Number(limit) : undefined;
+  const rawOff = offset !== undefined ? Number(offset) : undefined;
+  const lim = rawLim !== undefined && Number.isFinite(rawLim) ? Math.min(Math.max(0, Math.floor(rawLim)), 100) : undefined;
+  const off = rawOff !== undefined && Number.isFinite(rawOff) ? Math.max(0, Math.floor(rawOff)) : undefined;
+  if (lim !== undefined && lim > 0 && off !== undefined) qmov = qmov.range(off, off + lim - 1);
 
   const { data: movs, error } = await qmov;
   if (error) throw error;
@@ -95,7 +97,7 @@ r.get('/', asyncHandler(async (req: AuthedRequest, res: any) => {
 
 // POST /movimientos
 r.post('/', validateRequest(MovimientoSchema), asyncHandler(async (req: AuthedRequest, res: any) => {
-  const org_id = (req.body.org_id as string) || (req as any).org_id;
+  const org_id = req.org_id!;
   const usuario_id = req.user!.id;
   const { tipo, monto } = req.body || {};
 
@@ -111,6 +113,16 @@ r.post('/', validateRequest(MovimientoSchema), asyncHandler(async (req: AuthedRe
     if (!s) return res.status(400).json({ error: 'sucursal_id inválido' });
   }
 
+  if (payload.categoria_id) {
+    const { data: c } = await supabaseAdmin.from('categorias').select('id').eq('id', payload.categoria_id).eq('org_id', org_id).maybeSingle();
+    if (!c) return res.status(400).json({ error: 'categoria_id inválido' });
+  }
+
+  if (payload.pedido_id) {
+    const { data: p } = await supabaseAdmin.from('pedidos').select('id').eq('id', payload.pedido_id).eq('org_id', org_id).maybeSingle();
+    if (!p) return res.status(400).json({ error: 'pedido_id inválido' });
+  }
+
   const { data, error } = await supabaseAdmin.from('movimientos').insert({ ...payload, org_id }).select().single();
   if (error) throw error;
 
@@ -123,7 +135,7 @@ r.post('/', validateRequest(MovimientoSchema), asyncHandler(async (req: AuthedRe
 
 // PUT /movimientos/:id
 r.put('/:id', validateRequest(MovimientoUpdateSchema), asyncHandler(async (req: AuthedRequest, res: any) => {
-  const org_id = (req as any).org_id as string;
+  const org_id = req.org_id!;
   const { id } = req.params;
   if (!org_id) return res.status(401).json({ error: 'No org' });
 
@@ -131,6 +143,16 @@ r.put('/:id', validateRequest(MovimientoUpdateSchema), asyncHandler(async (req: 
   if ('sucursal_id' in patch && patch.sucursal_id) {
     const { data: s } = await supabaseAdmin.from('sucursales').select('id').eq('id', patch.sucursal_id).eq('org_id', org_id).maybeSingle();
     if (!s) return res.status(400).json({ error: 'sucursal_id inválido' });
+  }
+
+  if ('categoria_id' in patch && patch.categoria_id) {
+    const { data: c } = await supabaseAdmin.from('categorias').select('id').eq('id', patch.categoria_id).eq('org_id', org_id).maybeSingle();
+    if (!c) return res.status(400).json({ error: 'categoria_id inválido' });
+  }
+
+  if ('pedido_id' in patch && patch.pedido_id) {
+    const { data: p } = await supabaseAdmin.from('pedidos').select('id').eq('id', patch.pedido_id).eq('org_id', org_id).maybeSingle();
+    if (!p) return res.status(400).json({ error: 'pedido_id inválido' });
   }
 
   // Prevenimos pérdida de datos en el balance: verificamos a qué pedido pertenecía antes de actualizar
@@ -155,7 +177,7 @@ r.put('/:id', validateRequest(MovimientoUpdateSchema), asyncHandler(async (req: 
 
 // DELETE /movimientos/:id
 r.delete('/:id', asyncHandler(async (req: AuthedRequest, res: any) => {
-  const org_id = (req as any).org_id as string;
+  const org_id = req.org_id!;
   const { id } = req.params;
 
   const { data: oldMov } = await supabaseAdmin.from('movimientos').select('pedido_id').eq('id', id).eq('org_id', org_id).maybeSingle();

@@ -2,6 +2,8 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
+import helmet from 'helmet';
+import { rateLimit } from 'express-rate-limit';
 import { globalErrorHandler } from './lib/error';
 import { initWhatsAppJobs } from './jobs/whatsapp.job';
 
@@ -16,6 +18,9 @@ import rastreo from './routes/rastreo';
 
 const app = express();
 
+app.set('trust proxy', 1);
+app.use(helmet());
+
 // ─── CORS ───────────────────────────────────────────────────────────────
 const DEFAULT_ORIGINS = [
   'http://localhost:4200',
@@ -26,11 +31,16 @@ const extraOrigins = process.env.CORS_ORIGIN
   .map((o) => o.trim())
   .filter(Boolean) ?? [];
 const ALLOWED_ORIGINS = [...new Set([...DEFAULT_ORIGINS, ...extraOrigins])];
+const ALLOW_NO_ORIGIN = process.env.ALLOW_NO_ORIGIN !== 'false';
 
 const corsOptions: cors.CorsOptions = {
   origin: (origin, callback) => {
     // Permite peticiones sin origen (Postman, curl, apps móviles)
-    if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+    if (!origin) {
+      if (ALLOW_NO_ORIGIN) return callback(null, true);
+      return callback(new Error('CORS: Origin header required'));
+    }
+    if (ALLOWED_ORIGINS.includes(origin)) {
       return callback(null, true);
     }
     callback(new Error(`CORS: Origen '${origin}' no permitido`));
@@ -47,6 +57,23 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
+
+const rastreoLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+const authLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use('/rastreo', rastreoLimiter);
+app.use('/auth/login', authLimiter);
+
 app.use('/auth', auth);
 app.use('/movimientos', movimientos);
 app.use('/categorias', categorias);
@@ -56,8 +83,8 @@ app.use('/clientes', clientes);
 app.use('/pedidos', pedidos);
 app.use('/rastreo', rastreo);
 
-// Inicializamos las tareas automáticas
-initWhatsAppJobs();
+// Recordatorios automáticos por cron desactivados: el flujo actual es manual por actividad de cada cliente
+// initWhatsAppJobs();
 
 // Middleware Global de Errores (debe ir al final de todas las rutas)
 app.use(globalErrorHandler);

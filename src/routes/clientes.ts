@@ -3,7 +3,7 @@ import { supabaseAdmin } from '../lib/supabase';
 import { requireAuth, AuthedRequest } from '../lib/auth';
 import { requireMembership } from '../lib/guard';
 import { whatsappService } from '../lib/whatsapp';
-import { validateRequest } from '../lib/validate';
+import { validateRequest, escapeLike } from '../lib/validate';
 import { ClienteSchema, ClienteUpdateSchema } from '../lib/schemas';
 import { asyncHandler } from '../lib/error';
 
@@ -31,7 +31,7 @@ r.use(requireAuth, requireMembership);
 
 // --- 1. LISTAR CLIENTES (Con Filtros y Paginación) ---
 r.get('/', asyncHandler(async (req: AuthedRequest, res: any) => {
-  const org_id = (req as any).org_id;
+  const org_id = req.org_id!;
   const { q, limit, offset, filter } = req.query;
 
   let query = supabaseAdmin
@@ -52,20 +52,22 @@ r.get('/', asyncHandler(async (req: AuthedRequest, res: any) => {
     query = query.lt('ultima_visita', fifteenDaysAgo).gte('ultima_visita', fortyFiveDaysAgo);
   } else if (filter === '45plus') {
     const fortyFiveDaysAgo = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000).toISOString();
-    query = query.lt('ultima_visita', fortyFiveDaysAgo);
+    query = query.or(`ultima_visita.is.null,ultima_visita.lt.${fortyFiveDaysAgo}`);
   }
 
   // Filtro de búsqueda (Nombre o Teléfono)
   if (q && String(q).trim()) {
-    const term = String(q).trim();
+    const term = escapeLike(String(q).trim());
     query = query.or(`nombre.ilike.%${term}%,telefono.ilike.%${term}%`);
   }
 
   // Paginación
-  if (limit && offset) {
-    const from = Number(offset);
-    const to = from + Number(limit) - 1;
-    query = query.range(from, to);
+  const rawLim = limit !== undefined ? Number(limit) : undefined;
+  const rawOff = offset !== undefined ? Number(offset) : undefined;
+  const lim = rawLim !== undefined && Number.isFinite(rawLim) ? Math.min(Math.max(0, Math.floor(rawLim)), 100) : undefined;
+  const off = rawOff !== undefined && Number.isFinite(rawOff) ? Math.max(0, Math.floor(rawOff)) : undefined;
+  if (lim !== undefined && lim > 0 && off !== undefined) {
+    query = query.range(off, off + lim - 1);
   }
 
   const { data, error, count } = await query;
@@ -76,7 +78,7 @@ r.get('/', asyncHandler(async (req: AuthedRequest, res: any) => {
 
 // --- 2. ESTADÍSTICAS GLOBALES ---
 r.get('/stats', asyncHandler(async (req: AuthedRequest, res: any) => {
-  const org_id = (req as any).org_id;
+  const org_id = req.org_id!;
   const { data, error } = await supabaseAdmin
     .from('clientes')
     .select('id, ultima_visita, fecha_ultima_promo, permite_whatsapp, frecuencia_recordatorio')
@@ -132,7 +134,7 @@ r.get('/stats', asyncHandler(async (req: AuthedRequest, res: any) => {
 
 // --- 2.5. OBTENER CLIENTE POR ID ---
 r.get('/:id', asyncHandler(async (req: AuthedRequest, res: any) => {
-  const org_id = (req as any).org_id;
+  const org_id = req.org_id!;
   const { id } = req.params;
 
   const { data, error } = await supabaseAdmin
@@ -151,7 +153,7 @@ r.get('/:id', asyncHandler(async (req: AuthedRequest, res: any) => {
 
 // --- 3. CREAR CLIENTE ---
 r.post('/', validateRequest(ClienteSchema), asyncHandler(async (req: AuthedRequest, res: any) => {
-  const org_id = (req as any).org_id;
+  const org_id = req.org_id!;
   const { nombre, telefono, email, direccion, permite_whatsapp, frecuencia_recordatorio } = req.body;
 
   if (!org_id) return res.status(401).json({ error: 'La organización es obligatoria' });
@@ -200,7 +202,7 @@ r.post('/', validateRequest(ClienteSchema), asyncHandler(async (req: AuthedReque
 
 // --- 3. ACTUALIZAR CLIENTE ---
 r.put('/:id', validateRequest(ClienteUpdateSchema), asyncHandler(async (req: AuthedRequest, res: any) => {
-  const org_id = (req as any).org_id;
+  const org_id = req.org_id!;
   const { id } = req.params;
   
   const { id: _, org_id: __, created_at, ...updates } = req.body;
@@ -243,7 +245,7 @@ r.put('/:id', validateRequest(ClienteUpdateSchema), asyncHandler(async (req: Aut
 
 // --- 4. ELIMINAR CLIENTE ---
 r.delete('/:id', asyncHandler(async (req: AuthedRequest, res: any) => {
-  const org_id = (req as any).org_id;
+  const org_id = req.org_id!;
   const { id } = req.params;
 
   const { error } = await supabaseAdmin
@@ -258,7 +260,7 @@ r.delete('/:id', asyncHandler(async (req: AuthedRequest, res: any) => {
 
 // --- 5. MENSAJES MASIVOS (Real) ---
 r.post('/mass-message', asyncHandler(async (req: AuthedRequest, res: any) => {
-  const org_id = (req as any).org_id;
+  const org_id = req.org_id!;
   const { message } = req.body;
 
   if (!message) return res.status(400).json({ error: 'Falta el mensaje' });

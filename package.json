@@ -6,7 +6,9 @@
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "build": "tsc -p .",
     "postinstall": "npm run build",
-    "start:prod": "node dist/server.js"
+    "start:prod": "node dist/server.js",
+    "script:fix-duplicates": "node scripts/fix_duplicates.js",
+    "script:test-logic": "node scripts/test_logic.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
@@ -14,6 +16,8 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "express-rate-limit": "^8.7.1",
+    "helmet": "^8.3.0",
     "multer": "^2.0.2",
     "node-cron": "^4.2.1",
     "sharp": "^0.34.5",
