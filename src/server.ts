@@ -5,7 +5,6 @@ import compression from 'compression';
 import helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
 import { globalErrorHandler } from './lib/error';
-import { initWhatsAppJobs } from './jobs/whatsapp.job';
 
 import movimientos from './routes/movimientos';
 import categorias from './routes/categorias';
@@ -82,9 +81,6 @@ app.use('/sucursales', sucursales);
 app.use('/clientes', clientes);
 app.use('/pedidos', pedidos);
 app.use('/rastreo', rastreo);
-
-// Recordatorios automáticos por cron desactivados: el flujo actual es manual por actividad de cada cliente
-// initWhatsAppJobs();
 
 // Middleware Global de Errores (debe ir al final de todas las rutas)
 app.use(globalErrorHandler);
