@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '../lib/supabase';
+import { escapeLike } from '../lib/validate';
 
 export class LealtadService {
   static readonly MONEDERO_MAX = 50;
@@ -195,8 +196,8 @@ export class LealtadService {
     const { data: pedido, error: pedidoError } = await supabaseAdmin
       .from('pedidos')
       .select('id, estado, saldo_pendiente, promo_canjeada, descuento_aplicado, cliente_id, monto_total')
-      .eq('org_id', orgId)
-      .eq('folio', folio)
+      .eq('org_id', orgId.toLowerCase())
+      .ilike('folio', escapeLike(folio.trim()))
       .maybeSingle();
 
     if (pedidoError) throw pedidoError;

@@ -34,9 +34,12 @@ const dotenvId = require.resolve('dotenv/config', { paths: [__dirname] });
 stubModule(dotenvId, {});
 console.log('   dotenv/config stubeado -> .env NO se lee');
 
-// ─── Stub de initWhatsAppJobs -> no se agenda ningún cron ───
-const jobId = require.resolve(path.join(DIST, 'jobs', 'whatsapp.job.js'));
-stubModule(jobId, { initWhatsAppJobs: () => console.log('   initWhatsAppJobs stubeado -> sin cron') });
+try {
+  const jobId = require.resolve(path.join(DIST, 'jobs', 'whatsapp.job.js'));
+  stubModule(jobId, { initWhatsAppJobs: () => {} });
+} catch {
+  // Modulo eliminado en refactor de jobs
+}
 
 require(path.join(DIST, 'server.js'));
 

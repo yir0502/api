@@ -11,14 +11,27 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !SUPABASE_ANON_KEY) {
   throw new Error('Faltan variables de entorno esenciales para la configuración de Supabase.');
 }
 
+const validatedSupabaseUrl: string = SUPABASE_URL;
+const validatedAnonKey: string = SUPABASE_ANON_KEY;
+
 export const supabaseAdmin = createClient(
-  SUPABASE_URL,
+  validatedSupabaseUrl,
   SUPABASE_SERVICE_ROLE_KEY,
   { auth: { persistSession: false } }
 );
 
 export const supabaseAnon = createClient(
-  SUPABASE_URL,
-  SUPABASE_ANON_KEY,
+  validatedSupabaseUrl,
+  validatedAnonKey,
   { auth: { persistSession: false } }
 );
+
+export function createEphemeralAnonClient() {
+  return createClient(validatedSupabaseUrl, validatedAnonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  });
+}
