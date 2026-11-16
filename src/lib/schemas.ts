@@ -17,6 +17,8 @@ export const MovimientoUpdateSchema = z.object({
   body: MovimientoSchema.shape.body.partial()
 });
 
+export const MetodoPagoSchema = z.enum(['efectivo', 'transferencia', 'tarjeta', 'mercado_pago', 'otro']);
+
 export const PedidoSchema = z.object({
   body: z.object({
     cliente_id: z.string().uuid().optional().nullable(),
@@ -26,6 +28,10 @@ export const PedidoSchema = z.object({
     monto_total: z.number().min(0),
     saldo_pendiente: z.number().min(0),
     descuento_aplicado: z.number().min(0).optional().default(0),
+    registrar_pago: z.boolean().optional(),
+    metodo_pago: MetodoPagoSchema.optional().nullable(),
+    categoria_ingreso_id: z.string().uuid().optional().nullable(),
+    omitir_whatsapp: z.boolean().optional(),
   })
 });
 
@@ -38,6 +44,10 @@ export const PedidoUpdateSchema = z.object({
     descuento_aplicado: z.number().min(0).optional(),
     fecha_entrega_estimada: z.string().optional().nullable(),
     sucursal_id: z.string().uuid().optional().nullable(),
+    monto_cobrado: z.number().min(0).optional(),
+    metodo_pago: MetodoPagoSchema.optional().nullable(),
+    categoria_ingreso_id: z.string().uuid().optional().nullable(),
+    omitir_whatsapp: z.boolean().optional(),
   })
 });
 

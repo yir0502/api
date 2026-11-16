@@ -11,33 +11,29 @@ const r = Router();
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024 } 
+  limits: { fileSize: 20 * 1024 * 1024 },
 });
 
 r.use(requireAuth);
 
-// 1. LISTAR PEDIDOS
+r.get('/integraciones/estado', requireMembership, asyncHandler(PedidosController.estadoIntegraciones));
+
 r.get('/', requireMembership, asyncHandler(PedidosController.listar));
 
-// 1.5 OBTENER PEDIDO POR ID
 r.get('/:id', requireMembership, asyncHandler(PedidosController.obtener));
 
-// 2. CREAR PEDIDO
 r.post('/', requireMembership, validateRequest(PedidoSchema), asyncHandler(PedidosController.crear));
 
-// 3. ACTUALIZAR ESTADO O INFORMACIÓN
 r.put('/:id', requireMembership, validateRequest(PedidoUpdateSchema), asyncHandler(PedidosController.actualizar));
 
-// 4. SUBIR EVIDENCIA (FOTO)
+r.post('/:id/notificar', requireMembership, asyncHandler(PedidosController.notificar));
+
 r.post('/:id/evidencia', requireMembership, upload.single('foto'), asyncHandler(PedidosController.subirEvidencia));
 
-// 5. OBTENER EVIDENCIAS DE UN PEDIDO
 r.get('/:id/evidencia', requireMembership, asyncHandler(PedidosController.listarEvidencias));
 
-// 6. ELIMINAR PEDIDO
 r.delete('/:id', requireMembership, asyncHandler(PedidosController.eliminar));
 
-// 7. ELIMINAR EVIDENCIA
 r.delete('/:id/evidencia/:evidenciaId', requireMembership, asyncHandler(PedidosController.eliminarEvidencia));
 
 export default r;
