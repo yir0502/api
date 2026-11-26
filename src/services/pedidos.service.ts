@@ -46,12 +46,29 @@ interface ClienteRelacion {
   permite_whatsapp?: boolean;
 }
 
+interface CategoriaIngresoRow {
+  id: string;
+  nombre?: string | null;
+  activo?: boolean | null;
+}
+
+const CATEGORIA_DEFAULT_TTL_MS = 5 * 60 * 1000;
+const categoriaDefaultCache = new Map<string, { id: string | null; expiresAt: number }>();
+
 function normalizarRelacionCliente(rel: ClienteRelacion | ClienteRelacion[] | null | undefined): ClienteRelacion | null {
   if (!rel) return null;
   return Array.isArray(rel) ? (rel[0] ?? null) : rel;
 }
 
 export class PedidosService {
+  static invalidarCacheCategoriaDefault(org_id?: string): void {
+    if (org_id) {
+      categoriaDefaultCache.delete(org_id);
+      return;
+    }
+    categoriaDefaultCache.clear();
+  }
+
   static generarFolio() {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     let result = '';
@@ -73,21 +90,54 @@ export class PedidosService {
 
   private static async resolverCategoriaIngresoDefault(
     org_id: string,
-    categoriaSolicitada?: string | null
+    categoriaSolicitada?: string | null,
+    categoriaHeredada?: string | null
   ): Promise<string | null> {
     if (categoriaSolicitada) return categoriaSolicitada;
+    if (categoriaHeredada) return categoriaHeredada;
 
-    const { data: cats } = await supabaseAdmin
+    const cached = categoriaDefaultCache.get(org_id);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.id;
+    }
+
+    let lista: CategoriaIngresoRow[] | null = null;
+    const { data: cats, error } = await supabaseAdmin
       .from('categorias')
-      .select('id')
+      .select('id, nombre, activo')
       .eq('org_id', org_id)
       .eq('tipo', 'ingreso')
-      .eq('activo', true)
-      .order('created_at', { ascending: true })
-      .limit(2);
+      .order('nombre', { ascending: true });
 
-    if (!cats || cats.length === 0) return null;
-    return cats.length > 1 ? cats[1].id : cats[0].id;
+    if (error) {
+      console.error('Error consultando categorias de ingreso:', error.message);
+      const { data: fallbackCats, error: fallbackError } = await supabaseAdmin
+        .from('categorias')
+        .select('id, nombre')
+        .eq('org_id', org_id)
+        .eq('tipo', 'ingreso')
+        .order('nombre', { ascending: true });
+
+      if (fallbackError) {
+        console.error('Error en fallback de categorias de ingreso:', fallbackError.message);
+        return null;
+      }
+      lista = (fallbackCats || []) as CategoriaIngresoRow[];
+    } else {
+      lista = (cats || []) as CategoriaIngresoRow[];
+    }
+
+    if (lista.length === 0) return null;
+
+    const activas = lista.filter((c) => c.activo !== false);
+    const candidatas = activas.length > 0 ? activas : lista;
+    const elegida = candidatas.length > 1 ? candidatas[1].id : (candidatas[0]?.id ?? null);
+
+    categoriaDefaultCache.set(org_id, {
+      id: elegida,
+      expiresAt: Date.now() + CATEGORIA_DEFAULT_TTL_MS,
+    });
+    return elegida;
   }
 
   static async listarPedidos(
@@ -394,7 +444,10 @@ export class PedidosService {
       const etiqueta = saldoEsperado === 0 ? 'Liquidacion' : 'Abono';
       const notaFinal = `${baseNota} | ${etiqueta}: $${montoCobradoNum.toFixed(2)} (${fechaCorta})`;
 
-      const categoriaId = await this.resolverCategoriaIngresoDefault(org_id, categoria_ingreso_id);
+      const categoriaPrevia =
+        (movsPrevios as Array<{ categoria_id?: string | null }>).find((m) => Boolean(m.categoria_id))?.categoria_id ??
+        null;
+      const categoriaId = await this.resolverCategoriaIngresoDefault(org_id, categoria_ingreso_id, categoriaPrevia);
       await MovimientosService.crearMovimiento(org_id, usuario_id, {
         tipo: 'ingreso',
         monto: montoCobradoNum,

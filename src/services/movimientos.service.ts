@@ -1,5 +1,63 @@
 import { supabaseAdmin } from '../lib/supabase';
 
+export interface MovimientosFilter {
+  desde?: unknown;
+  hasta?: unknown;
+  tipo?: unknown;
+  categoria_id?: unknown;
+  metodo_pago?: unknown;
+  sucursal_id?: unknown;
+  q?: unknown;
+  limit?: unknown;
+  offset?: unknown;
+  pedido_id?: unknown;
+}
+
+export interface MovimientoRelacionesInput {
+  sucursal_id?: string | null;
+  categoria_id?: string | null;
+  pedido_id?: string | null;
+}
+
+export interface MovimientoInput extends MovimientoRelacionesInput {
+  tipo?: 'ingreso' | 'egreso';
+  monto?: number;
+  fecha?: string;
+  metodo_pago?: string | null;
+  nota?: string | null;
+}
+
+interface RelacionNombre {
+  id?: string;
+  nombre?: string | null;
+}
+
+interface MovimientoDbRow {
+  id: string;
+  org_id: string;
+  tipo: 'ingreso' | 'egreso';
+  monto: number;
+  categoria_id?: string | null;
+  sucursal_id?: string | null;
+  pedido_id?: string | null;
+  fecha?: string | null;
+  metodo_pago?: string | null;
+  nota?: string | null;
+  created_at?: string | null;
+  categorias?: RelacionNombre | RelacionNombre[] | null;
+  sucursales?: RelacionNombre | RelacionNombre[] | null;
+}
+
+function extraerNombreRelacion(rel: RelacionNombre | RelacionNombre[] | null | undefined): string | null {
+  if (!rel) return null;
+  const item = Array.isArray(rel) ? rel[0] : rel;
+  return item?.nombre ?? null;
+}
+
+function crearErrorHttp(mensaje: string, status: number): Error & { status: number } {
+  return Object.assign(new Error(mensaje), { status });
+}
+
 export class MovimientosService {
   static async reconciliarPedido(pedido_id: string, org_id: string) {
     if (!pedido_id) return;
@@ -39,7 +97,7 @@ export class MovimientosService {
       .eq('org_id', org_id);
   }
 
-  static async listarMovimientos(org_id: string, filters: any) {
+  static async listarMovimientos(org_id: string, filters: MovimientosFilter) {
     const { desde, hasta, tipo, categoria_id, metodo_pago, sucursal_id, q, limit, offset, pedido_id } = filters;
 
     let qmov = supabaseAdmin
@@ -67,17 +125,17 @@ export class MovimientosService {
     const { data: movs, error } = await qmov;
     if (error) throw error;
 
-    let result = (movs || []).map((m: any) => ({
+    let result = ((movs || []) as MovimientoDbRow[]).map((m) => ({
       ...m,
-      categoria_nombre: m.categorias?.nombre || 'Sin categoría',
-      sucursal_nombre: m.sucursales?.nombre || 'Sin sucursal',
+      categoria_nombre: extraerNombreRelacion(m.categorias) || 'Sin categoría',
+      sucursal_nombre: extraerNombreRelacion(m.sucursales) || 'Sin sucursal',
       categorias: undefined,
       sucursales: undefined,
     }));
 
     if (q && String(q).trim()) {
       const needle = String(q).trim().toLowerCase();
-      result = result.filter((m: any) => {
+      result = result.filter((m) => {
         const nota = (m.nota || '').toLowerCase();
         const metodo = (m.metodo_pago || '').toLowerCase();
         const cat = (m.categoria_nombre || '').toLowerCase();
@@ -99,65 +157,76 @@ export class MovimientosService {
 
     if (error) throw error;
     if (!data) {
-      const err: any = new Error('Movimiento no encontrado');
-      err.status = 404;
-      throw err;
+      throw crearErrorHttp('Movimiento no encontrado', 404);
     }
 
+    const row = data as MovimientoDbRow;
     return {
-      ...data,
-      categoria_nombre: (data as any).categorias?.nombre || 'Sin categoría',
-      sucursal_nombre: (data as any).sucursales?.nombre || 'Sin sucursal',
+      ...row,
+      categoria_nombre: extraerNombreRelacion(row.categorias) || 'Sin categoría',
+      sucursal_nombre: extraerNombreRelacion(row.sucursales) || 'Sin sucursal',
       categorias: undefined,
       sucursales: undefined,
     };
   }
 
-  private static async validarRelaciones(org_id: string, payload: any) {
+  private static async validarRelaciones(org_id: string, payload: MovimientoRelacionesInput) {
+    const validaciones: Promise<void>[] = [];
+
     if (payload.sucursal_id) {
-      const { data: s } = await supabaseAdmin
-        .from('sucursales')
-        .select('id')
-        .eq('id', payload.sucursal_id)
-        .eq('org_id', org_id)
-        .maybeSingle();
-      if (!s) {
-        const err: any = new Error('sucursal_id inválido');
-        err.status = 400;
-        throw err;
-      }
+      validaciones.push(
+        (async () => {
+          const { data: s } = await supabaseAdmin
+            .from('sucursales')
+            .select('id')
+            .eq('id', payload.sucursal_id)
+            .eq('org_id', org_id)
+            .maybeSingle();
+          if (!s) {
+            throw crearErrorHttp('sucursal_id inválido', 400);
+          }
+        })()
+      );
     }
 
     if (payload.categoria_id) {
-      const { data: c } = await supabaseAdmin
-        .from('categorias')
-        .select('id')
-        .eq('id', payload.categoria_id)
-        .eq('org_id', org_id)
-        .maybeSingle();
-      if (!c) {
-        const err: any = new Error('categoria_id inválido');
-        err.status = 400;
-        throw err;
-      }
+      validaciones.push(
+        (async () => {
+          const { data: c } = await supabaseAdmin
+            .from('categorias')
+            .select('id')
+            .eq('id', payload.categoria_id)
+            .eq('org_id', org_id)
+            .maybeSingle();
+          if (!c) {
+            throw crearErrorHttp('categoria_id inválido', 400);
+          }
+        })()
+      );
     }
 
     if (payload.pedido_id) {
-      const { data: p } = await supabaseAdmin
-        .from('pedidos')
-        .select('id')
-        .eq('id', payload.pedido_id)
-        .eq('org_id', org_id)
-        .maybeSingle();
-      if (!p) {
-        const err: any = new Error('pedido_id inválido');
-        err.status = 400;
-        throw err;
-      }
+      validaciones.push(
+        (async () => {
+          const { data: p } = await supabaseAdmin
+            .from('pedidos')
+            .select('id')
+            .eq('id', payload.pedido_id)
+            .eq('org_id', org_id)
+            .maybeSingle();
+          if (!p) {
+            throw crearErrorHttp('pedido_id inválido', 400);
+          }
+        })()
+      );
+    }
+
+    if (validaciones.length > 0) {
+      await Promise.all(validaciones);
     }
   }
 
-  static async crearMovimiento(org_id: string, usuario_id: string, body: any) {
+  static async crearMovimiento(org_id: string, usuario_id: string, body: MovimientoInput) {
     await this.validarRelaciones(org_id, body);
 
     const payload = { ...body, org_id, usuario_id };
@@ -176,7 +245,7 @@ export class MovimientosService {
     return data;
   }
 
-  static async actualizarMovimiento(id: string, org_id: string, patch: any) {
+  static async actualizarMovimiento(id: string, org_id: string, patch: MovimientoInput) {
     await this.validarRelaciones(org_id, patch);
 
     const { data: oldMov } = await supabaseAdmin

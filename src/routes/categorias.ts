@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { supabaseAdmin } from '../lib/supabase';
 import { requireAuth, AuthedRequest } from '../lib/auth';
 import { requireMembership } from '../lib/guard';
+import { PedidosService } from '../services/pedidos.service';
 
 const r = Router();
 r.use(requireAuth, requireMembership);
@@ -33,6 +34,7 @@ r.post('/', async (req: AuthedRequest, res) => {
     .single();
 
   if (error) return res.status(400).json({ error: 'No se pudo completar la operación' });
+  PedidosService.invalidarCacheCategoriaDefault(org_id);
   res.json(data);
 });
 
@@ -52,6 +54,7 @@ r.put('/:id', async (req: AuthedRequest, res) => {
     .select()
     .single();
   if (error) return res.status(400).json({ error: 'No se pudo completar la operación' });
+  PedidosService.invalidarCacheCategoriaDefault(org_id);
   res.json(data);
 });
 
@@ -65,6 +68,7 @@ r.delete('/:id', async (req: AuthedRequest, res) => {
     .eq('id', id)
     .eq('org_id', org_id);
   if (error) return res.status(400).json({ error: 'No se pudo completar la operación' });
+  PedidosService.invalidarCacheCategoriaDefault(org_id);
   res.json({ ok: true });
 });
 
