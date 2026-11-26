@@ -53,6 +53,17 @@ export interface MovimientosTotales {
   ingresos: number;
   egresos: number;
   balance: number;
+  total_movimientos: number;
+  ingresos_count: number;
+  egresos_count: number;
+}
+
+const SUPABASE_BATCH_SIZE = 1000;
+
+interface FilterableQuery<T> {
+  eq(column: string, value: string): T;
+  gte(column: string, value: string): T;
+  lte(column: string, value: string): T;
 }
 
 export type MovimientoListadoRow = Omit<MovimientoDbRow, 'categorias' | 'sucursales'> & {
@@ -122,11 +133,21 @@ export function normalizarYFiltrarMovimientos(rows: MovimientoDbRow[], q?: unkno
   return result;
 }
 
-export function calcularTotalesMovimientos(rows: MovimientoListadoRow[]): MovimientosTotales {
+export function calcularTotalesMovimientos(
+  rows: ReadonlyArray<{ tipo: 'ingreso' | 'egreso'; monto: number }>
+): MovimientosTotales {
   let ingresos = 0;
   let egresos = 0;
+  let ingresosCount = 0;
+  let egresosCount = 0;
 
   for (const row of rows) {
+    if (row.tipo === 'ingreso') {
+      ingresosCount += 1;
+    } else if (row.tipo === 'egreso') {
+      egresosCount += 1;
+    }
+
     const monto = Number(row.monto);
     if (!Number.isFinite(monto)) continue;
     if (row.tipo === 'ingreso') {
@@ -144,6 +165,9 @@ export function calcularTotalesMovimientos(rows: MovimientoListadoRow[]): Movimi
     ingresos: ingresosRedondeado,
     egresos: egresosRedondeado,
     balance: balanceRedondeado,
+    total_movimientos: rows.length,
+    ingresos_count: ingresosCount,
+    egresos_count: egresosCount,
   };
 }
 
@@ -186,56 +210,165 @@ export class MovimientosService {
       .eq('org_id', org_id);
   }
 
-  private static construirQueryBase(org_id: string, filters: MovimientosFilter) {
+  private static aplicarFiltrosComunes<T extends FilterableQuery<T>>(
+    query: T,
+    filters: MovimientosFilter,
+    incluirTipo: boolean
+  ): T {
     const { desde, hasta, tipo, categoria_id, metodo_pago, sucursal_id, pedido_id } = filters;
 
-    let qmov = supabaseAdmin
-      .from('movimientos')
-      .select('*, categorias ( id, nombre ), sucursales ( id, nombre )')
-      .eq('org_id', org_id);
-
+    let qmov = query;
     if (desde) qmov = qmov.gte('fecha', String(desde));
     if (hasta) qmov = qmov.lte('fecha', String(hasta));
-    if (tipo) qmov = qmov.eq('tipo', String(tipo));
+    if (incluirTipo && tipo) qmov = qmov.eq('tipo', String(tipo));
     if (categoria_id) qmov = qmov.eq('categoria_id', String(categoria_id));
     if (metodo_pago) qmov = qmov.eq('metodo_pago', String(metodo_pago));
     if (sucursal_id) qmov = qmov.eq('sucursal_id', String(sucursal_id));
     if (pedido_id) qmov = qmov.eq('pedido_id', String(pedido_id));
 
-    return qmov.order('fecha', { ascending: false }).order('created_at', { ascending: false });
+    return qmov;
+  }
+
+  private static construirQueryBase(org_id: string, filters: MovimientosFilter) {
+    const base = supabaseAdmin
+      .from('movimientos')
+      .select('*, categorias ( id, nombre ), sucursales ( id, nombre )')
+      .eq('org_id', org_id);
+
+    return this.aplicarFiltrosComunes(base, filters, true)
+      .order('fecha', { ascending: false })
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false });
+  }
+
+  private static construirQueryResumen(org_id: string, filters: MovimientosFilter) {
+    const base = supabaseAdmin
+      .from('movimientos')
+      .select('tipo, monto')
+      .eq('org_id', org_id);
+
+    return this.aplicarFiltrosComunes(base, filters, false).order('id', { ascending: true });
+  }
+
+  private static async obtenerResumenEnLotes(
+    org_id: string,
+    filtersSinTipo: MovimientosFilter
+  ): Promise<MovimientosTotales> {
+    const acumulado: Array<{ tipo: 'ingreso' | 'egreso'; monto: number }> = [];
+    let inicio = 0;
+
+    // PostgREST limita cada consulta individual a 1000 filas; iteramos en lotes para no truncar periodos largos.
+    while (true) {
+      const { data, error } = await this.construirQueryResumen(org_id, filtersSinTipo).range(
+        inicio,
+        inicio + SUPABASE_BATCH_SIZE - 1
+      );
+      if (error) throw error;
+
+      const lote = (data || []) as Array<{ tipo: 'ingreso' | 'egreso'; monto: number }>;
+      acumulado.push(...lote);
+
+      if (lote.length < SUPABASE_BATCH_SIZE) {
+        break;
+      }
+      inicio += SUPABASE_BATCH_SIZE;
+    }
+
+    return calcularTotalesMovimientos(acumulado);
+  }
+
+  private static async obtenerTodosEnLotes(
+    org_id: string,
+    filters: MovimientosFilter,
+    startOffset = 0,
+    maxRows?: number
+  ): Promise<MovimientoDbRow[]> {
+    const acumulado: MovimientoDbRow[] = [];
+    let inicio = Math.max(0, startOffset);
+
+    while (true) {
+      const restante = maxRows !== undefined ? maxRows - acumulado.length : SUPABASE_BATCH_SIZE;
+      if (restante <= 0) {
+        break;
+      }
+
+      const batchLen = Math.min(SUPABASE_BATCH_SIZE, restante);
+      const { data, error } = await this.construirQueryBase(org_id, filters).range(
+        inicio,
+        inicio + batchLen - 1
+      );
+      if (error) throw error;
+
+      const lote = (data || []) as MovimientoDbRow[];
+      acumulado.push(...lote);
+
+      if (lote.length < batchLen) {
+        break;
+      }
+      inicio += batchLen;
+    }
+
+    return acumulado;
   }
 
   static async listarMovimientos(org_id: string, filters: MovimientosFilter): Promise<MovimientoListadoRow[]> {
     const { q, limit, offset } = filters;
-    let qmov = this.construirQueryBase(org_id, filters);
-
     const rawLim = limit !== undefined ? Number(limit) : undefined;
     const rawOff = offset !== undefined ? Number(offset) : undefined;
     const lim = rawLim !== undefined && Number.isFinite(rawLim) ? Math.min(Math.max(0, Math.floor(rawLim)), 2000) : undefined;
     const off = rawOff !== undefined && Number.isFinite(rawOff) ? Math.max(0, Math.floor(rawOff)) : undefined;
-    if (lim !== undefined && lim > 0 && off !== undefined) qmov = qmov.range(off, off + lim - 1);
-    else if (lim !== undefined && lim > 0) qmov = qmov.limit(lim);
 
-    const { data: movs, error } = await qmov;
-    if (error) throw error;
+    if (lim !== undefined && lim > 0 && lim <= SUPABASE_BATCH_SIZE) {
+      let qmov = this.construirQueryBase(org_id, filters);
+      if (off !== undefined) qmov = qmov.range(off, off + lim - 1);
+      else qmov = qmov.limit(lim);
 
-    return normalizarYFiltrarMovimientos((movs || []) as MovimientoDbRow[], q);
+      const { data: movs, error } = await qmov;
+      if (error) throw error;
+
+      return normalizarYFiltrarMovimientos((movs || []) as MovimientoDbRow[], q);
+    }
+
+    const movs = await this.obtenerTodosEnLotes(org_id, filters, off ?? 0, lim && lim > 0 ? lim : undefined);
+    return normalizarYFiltrarMovimientos(movs, q);
   }
 
   static async listarMovimientosPaginados(
     org_id: string,
     filters: MovimientosFilter
   ): Promise<MovimientosPaginadosResult> {
-    const { data: movs, error } = await this.construirQueryBase(org_id, filters);
-    if (error) throw error;
-
-    const filtrados = normalizarYFiltrarMovimientos((movs || []) as MovimientoDbRow[], filters.q);
-    const count = filtrados.length;
-    const totales = calcularTotalesMovimientos(filtrados);
     const { limit, offset } = normalizarPaginacion(filters.limit, filters.offset);
-    const data = filtrados.slice(offset, offset + limit);
+    const filtersSinTipo: MovimientosFilter = { ...filters, tipo: undefined };
+    const needle = filters.q ? String(filters.q).trim() : '';
+    const tipoFiltro = filters.tipo ? String(filters.tipo) : '';
 
-    return { data, count, totales };
+    if (!needle) {
+      const [pageRes, totales] = await Promise.all([
+        this.construirQueryBase(org_id, filters).range(offset, offset + limit - 1),
+        this.obtenerResumenEnLotes(org_id, filtersSinTipo),
+      ]);
+      if (pageRes.error) throw pageRes.error;
+
+      const count =
+        tipoFiltro === 'ingreso'
+          ? totales.ingresos_count
+          : tipoFiltro === 'egreso'
+            ? totales.egresos_count
+            : totales.total_movimientos;
+
+      const data = normalizarYFiltrarMovimientos((pageRes.data || []) as MovimientoDbRow[]);
+      return { data, count, totales };
+    }
+
+    const allRows = await this.obtenerTodosEnLotes(org_id, filtersSinTipo);
+    const periodoFiltrado = normalizarYFiltrarMovimientos(allRows, filters.q);
+    const totales = calcularTotalesMovimientos(periodoFiltrado);
+    const listaFiltrada = tipoFiltro
+      ? periodoFiltrado.filter((m) => m.tipo === tipoFiltro)
+      : periodoFiltrado;
+    const data = listaFiltrada.slice(offset, offset + limit);
+
+    return { data, count: listaFiltrada.length, totales };
   }
 
   static async obtenerMovimiento(id: string, org_id: string): Promise<MovimientoListadoRow> {

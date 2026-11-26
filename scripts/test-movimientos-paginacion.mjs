@@ -119,11 +119,13 @@ function createSupabaseBuilder(tableName) {
       });
     }
 
+    const POSTGREST_MAX_ROWS = 1000;
     if (state.rangeFrom !== null && state.rangeTo !== null) {
       rows = rows.slice(state.rangeFrom, state.rangeTo + 1);
     } else if (state.limitVal !== null) {
       rows = rows.slice(0, state.limitVal);
     }
+    rows = rows.slice(0, POSTGREST_MAX_ROWS);
 
     const cloned = rows.map(cloneRow);
     if (singleMode === 'maybeSingle') {
@@ -203,13 +205,28 @@ function roundTwo(value) {
 function computeExpectedTotales(rows) {
   let ingresos = 0;
   let egresos = 0;
+  let ingresosCount = 0;
+  let egresosCount = 0;
   for (const r of rows) {
-    if (r.tipo === 'ingreso') ingresos += Number(r.monto);
-    if (r.tipo === 'egreso') egresos += Number(r.monto);
+    if (r.tipo === 'ingreso') {
+      ingresos += Number(r.monto);
+      ingresosCount += 1;
+    }
+    if (r.tipo === 'egreso') {
+      egresos += Number(r.monto);
+      egresosCount += 1;
+    }
   }
   const ing = roundTwo(ingresos);
   const egr = roundTwo(egresos);
-  return { ingresos: ing, egresos: egr, balance: roundTwo(ing - egr) };
+  return {
+    ingresos: ing,
+    egresos: egr,
+    balance: roundTwo(ing - egr),
+    total_movimientos: rows.length,
+    ingresos_count: ingresosCount,
+    egresos_count: egresosCount,
+  };
 }
 
 async function requestJson(server, pathWithQuery, headers = {}) {
@@ -435,10 +452,24 @@ describe('MovimientosService paginacion, filtrado y normalizacion', () => {
         .map((r) => r.id);
       assert.deepEqual(allIds, expectedOrder);
 
-      assert.equal(dbState.queryLog[0].limitVal, null);
-      assert.equal(dbState.queryLog[0].rangeFrom, null);
-      assert.equal(dbState.queryLog[1].limitVal, null);
-      assert.equal(dbState.queryLog[1].rangeFrom, null);
+      const pageQueries = dbState.queryLog.filter((q) => q.selectCols !== 'tipo, monto');
+      const summaryQueries = dbState.queryLog.filter((q) => q.selectCols === 'tipo, monto');
+      assert.equal(pageQueries.length, 2);
+      assert.equal(summaryQueries.length, 2);
+      assert.deepEqual(
+        pageQueries.map((q) => [q.rangeFrom, q.rangeTo]),
+        [
+          [0, 19],
+          [20, 39],
+        ]
+      );
+      assert.deepEqual(
+        summaryQueries.map((q) => [q.rangeFrom, q.rangeTo]),
+        [
+          [0, 999],
+          [0, 999],
+        ]
+      );
     });
   });
 
@@ -661,7 +692,14 @@ describe('MovimientosService paginacion, filtrado y normalizacion', () => {
       assert.deepEqual(emptyRes, {
         data: [],
         count: 0,
-        totales: { ingresos: 0, egresos: 0, balance: 0 },
+        totales: {
+          ingresos: 0,
+          egresos: 0,
+          balance: 0,
+          total_movimientos: 0,
+          ingresos_count: 0,
+          egresos_count: 0,
+        },
       });
 
       dbState.movimientos = null;
@@ -669,7 +707,14 @@ describe('MovimientosService paginacion, filtrado y normalizacion', () => {
       assert.deepEqual(nullRes, {
         data: [],
         count: 0,
-        totales: { ingresos: 0, egresos: 0, balance: 0 },
+        totales: {
+          ingresos: 0,
+          egresos: 0,
+          balance: 0,
+          total_movimientos: 0,
+          ingresos_count: 0,
+          egresos_count: 0,
+        },
       });
     });
 
@@ -690,7 +735,14 @@ describe('MovimientosService paginacion, filtrado y normalizacion', () => {
         { ...buildMovimiento(11, { tipo: 'ingreso', monto: 0.01 }), categoria_nombre: 'A', sucursal_nombre: 'B' },
         { ...buildMovimiento(12, { tipo: 'egreso', monto: Number.NaN }), categoria_nombre: 'A', sucursal_nombre: 'B' },
       ]);
-      assert.deepEqual(extraTotales, { ingresos: 20, egresos: 0, balance: 20 });
+      assert.deepEqual(extraTotales, {
+        ingresos: 20,
+        egresos: 0,
+        balance: 20,
+        total_movimientos: 3,
+        ingresos_count: 2,
+        egresos_count: 1,
+      });
     });
 
     it('propaga error de Supabase en listarMovimientosPaginados', async () => {
@@ -760,6 +812,102 @@ describe('MovimientosService paginacion, filtrado y normalizacion', () => {
         authHeaders
       );
       assert.equal(forbiddenOrg.status, 403);
+    });
+  });
+
+  describe('f) datasets > 1000 filas (sin truncamiento PostgREST) y totales estables al filtrar tipo', () => {
+    it('calcula totales reales sobre 1350 filas en lotes y los mantiene estables al filtrar tipo ingreso o egreso', async () => {
+      const rows1350 = [];
+      for (let i = 1; i <= 1350; i++) {
+        const isEgreso = i <= 100;
+        const month = String(Math.floor((i - 1) / 300) + 1).padStart(2, '0');
+        const day = String(((i - 1) % 28) + 1).padStart(2, '0');
+        rows1350.push(
+          buildMovimiento(i, {
+            tipo: isEgreso ? 'egreso' : 'ingreso',
+            monto: isEgreso ? 50 + (i % 7) : 200 + (i % 11),
+            fecha: `2026-${month}-${day}`,
+            created_at: `2026-${month}-${day}T12:00:00.000Z`,
+          })
+        );
+      }
+      dbState.movimientos = rows1350;
+      const expectedTotales = computeExpectedTotales(rows1350);
+
+      const resTodos = await MovimientosService.listarMovimientosPaginados(ORG_A, {
+        limit: 20,
+        offset: 0,
+      });
+      assert.equal(resTodos.data.length, 20);
+      assert.equal(resTodos.count, 1350);
+      assert.deepEqual(resTodos.totales, expectedTotales);
+      assert.equal(resTodos.totales.total_movimientos, 1350);
+      assert.equal(resTodos.totales.ingresos_count, 1250);
+      assert.equal(resTodos.totales.egresos_count, 100);
+
+      const resIngresos = await MovimientosService.listarMovimientosPaginados(ORG_A, {
+        tipo: 'ingreso',
+        limit: 20,
+        offset: 0,
+      });
+      assert.equal(resIngresos.data.length, 20);
+      assert.equal(resIngresos.count, 1250);
+      assert.equal(resIngresos.data.every((m) => m.tipo === 'ingreso'), true);
+      assert.deepEqual(resIngresos.totales, expectedTotales);
+
+      const resEgresos = await MovimientosService.listarMovimientosPaginados(ORG_A, {
+        tipo: 'egreso',
+        limit: 20,
+        offset: 0,
+      });
+      assert.equal(resEgresos.data.length, 20);
+      assert.equal(resEgresos.count, 100);
+      assert.equal(resEgresos.data.every((m) => m.tipo === 'egreso'), true);
+      assert.deepEqual(resEgresos.totales, expectedTotales);
+
+      const legacyFull = await MovimientosService.listarMovimientos(ORG_A, { limit: 2000 });
+      assert.equal(legacyFull.length, 1350);
+    });
+
+    it('mantiene totales completos por q > 1000 filas incluso al filtrar tipo egreso', async () => {
+      const matchingRows = [];
+      for (let i = 1; i <= 1250; i++) {
+        const isEgreso = i <= 70;
+        matchingRows.push(
+          buildMovimiento(i, {
+            tipo: isEgreso ? 'egreso' : 'ingreso',
+            monto: isEgreso ? 45 : 150,
+            nota: `Lote Especial ${i}`,
+          })
+        );
+      }
+      const nonMatchingRows = [];
+      for (let i = 1251; i <= 1400; i++) {
+        nonMatchingRows.push(
+          buildMovimiento(i, {
+            tipo: 'ingreso',
+            monto: 999,
+            nota: `Descartado ${i}`,
+          })
+        );
+      }
+      dbState.movimientos = [...matchingRows, ...nonMatchingRows];
+      const expectedMatchingTotales = computeExpectedTotales(matchingRows);
+
+      const res = await MovimientosService.listarMovimientosPaginados(ORG_A, {
+        q: 'especial',
+        tipo: 'egreso',
+        limit: 20,
+        offset: 0,
+      });
+
+      assert.equal(res.count, 70);
+      assert.equal(res.data.length, 20);
+      assert.equal(res.data.every((m) => m.tipo === 'egreso'), true);
+      assert.deepEqual(res.totales, expectedMatchingTotales);
+      assert.equal(res.totales.total_movimientos, 1250);
+      assert.equal(res.totales.ingresos_count, 1180);
+      assert.equal(res.totales.egresos_count, 70);
     });
   });
 });
