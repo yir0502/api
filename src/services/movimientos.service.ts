@@ -11,6 +11,7 @@ export interface MovimientosFilter {
   limit?: unknown;
   offset?: unknown;
   pedido_id?: unknown;
+  paginated?: unknown;
 }
 
 export interface MovimientoRelacionesInput {
@@ -27,12 +28,12 @@ export interface MovimientoInput extends MovimientoRelacionesInput {
   nota?: string | null;
 }
 
-interface RelacionNombre {
+export interface RelacionNombre {
   id?: string;
   nombre?: string | null;
 }
 
-interface MovimientoDbRow {
+export interface MovimientoDbRow {
   id: string;
   org_id: string;
   tipo: 'ingreso' | 'egreso';
@@ -48,6 +49,25 @@ interface MovimientoDbRow {
   sucursales?: RelacionNombre | RelacionNombre[] | null;
 }
 
+export interface MovimientosTotales {
+  ingresos: number;
+  egresos: number;
+  balance: number;
+}
+
+export type MovimientoListadoRow = Omit<MovimientoDbRow, 'categorias' | 'sucursales'> & {
+  categoria_nombre: string;
+  sucursal_nombre: string;
+  categorias?: undefined;
+  sucursales?: undefined;
+};
+
+export interface MovimientosPaginadosResult {
+  data: MovimientoListadoRow[];
+  count: number;
+  totales: MovimientosTotales;
+}
+
 function extraerNombreRelacion(rel: RelacionNombre | RelacionNombre[] | null | undefined): string | null {
   if (!rel) return null;
   const item = Array.isArray(rel) ? rel[0] : rel;
@@ -56,6 +76,75 @@ function extraerNombreRelacion(rel: RelacionNombre | RelacionNombre[] | null | u
 
 function crearErrorHttp(mensaje: string, status: number): Error & { status: number } {
   return Object.assign(new Error(mensaje), { status });
+}
+
+function redondearDosDecimales(valor: number): number {
+  return Math.round(valor * 100) / 100;
+}
+
+export function normalizarPaginacion(limitRaw: unknown, offsetRaw: unknown): { limit: number; offset: number } {
+  const parsedLimit = limitRaw !== undefined ? Number(limitRaw) : NaN;
+  const limit =
+    Number.isFinite(parsedLimit) && parsedLimit > 0
+      ? Math.max(1, Math.min(Math.floor(parsedLimit), 100))
+      : 20;
+
+  const parsedOffset = offsetRaw !== undefined ? Number(offsetRaw) : NaN;
+  const offset = Number.isFinite(parsedOffset) ? Math.max(0, Math.floor(parsedOffset)) : 0;
+
+  return { limit, offset };
+}
+
+function normalizarMovimiento(row: MovimientoDbRow): MovimientoListadoRow {
+  return {
+    ...row,
+    categoria_nombre: extraerNombreRelacion(row.categorias) || 'Sin categoría',
+    sucursal_nombre: extraerNombreRelacion(row.sucursales) || 'Sin sucursal',
+    categorias: undefined,
+    sucursales: undefined,
+  };
+}
+
+export function normalizarYFiltrarMovimientos(rows: MovimientoDbRow[], q?: unknown): MovimientoListadoRow[] {
+  let result = rows.map(normalizarMovimiento);
+
+  const needle = q ? String(q).trim().toLowerCase() : '';
+  if (needle) {
+    result = result.filter((m) => {
+      const nota = (m.nota || '').toLowerCase();
+      const metodo = (m.metodo_pago || '').toLowerCase();
+      const cat = (m.categoria_nombre || '').toLowerCase();
+      const suc = (m.sucursal_nombre || '').toLowerCase();
+      return nota.includes(needle) || metodo.includes(needle) || cat.includes(needle) || suc.includes(needle);
+    });
+  }
+
+  return result;
+}
+
+export function calcularTotalesMovimientos(rows: MovimientoListadoRow[]): MovimientosTotales {
+  let ingresos = 0;
+  let egresos = 0;
+
+  for (const row of rows) {
+    const monto = Number(row.monto);
+    if (!Number.isFinite(monto)) continue;
+    if (row.tipo === 'ingreso') {
+      ingresos += monto;
+    } else if (row.tipo === 'egreso') {
+      egresos += monto;
+    }
+  }
+
+  const ingresosRedondeado = redondearDosDecimales(ingresos);
+  const egresosRedondeado = redondearDosDecimales(egresos);
+  const balanceRedondeado = redondearDosDecimales(ingresosRedondeado - egresosRedondeado);
+
+  return {
+    ingresos: ingresosRedondeado,
+    egresos: egresosRedondeado,
+    balance: balanceRedondeado,
+  };
 }
 
 export class MovimientosService {
@@ -97,8 +186,8 @@ export class MovimientosService {
       .eq('org_id', org_id);
   }
 
-  static async listarMovimientos(org_id: string, filters: MovimientosFilter) {
-    const { desde, hasta, tipo, categoria_id, metodo_pago, sucursal_id, q, limit, offset, pedido_id } = filters;
+  private static construirQueryBase(org_id: string, filters: MovimientosFilter) {
+    const { desde, hasta, tipo, categoria_id, metodo_pago, sucursal_id, pedido_id } = filters;
 
     let qmov = supabaseAdmin
       .from('movimientos')
@@ -113,7 +202,12 @@ export class MovimientosService {
     if (sucursal_id) qmov = qmov.eq('sucursal_id', String(sucursal_id));
     if (pedido_id) qmov = qmov.eq('pedido_id', String(pedido_id));
 
-    qmov = qmov.order('fecha', { ascending: false }).order('created_at', { ascending: false });
+    return qmov.order('fecha', { ascending: false }).order('created_at', { ascending: false });
+  }
+
+  static async listarMovimientos(org_id: string, filters: MovimientosFilter): Promise<MovimientoListadoRow[]> {
+    const { q, limit, offset } = filters;
+    let qmov = this.construirQueryBase(org_id, filters);
 
     const rawLim = limit !== undefined ? Number(limit) : undefined;
     const rawOff = offset !== undefined ? Number(offset) : undefined;
@@ -125,29 +219,26 @@ export class MovimientosService {
     const { data: movs, error } = await qmov;
     if (error) throw error;
 
-    let result = ((movs || []) as MovimientoDbRow[]).map((m) => ({
-      ...m,
-      categoria_nombre: extraerNombreRelacion(m.categorias) || 'Sin categoría',
-      sucursal_nombre: extraerNombreRelacion(m.sucursales) || 'Sin sucursal',
-      categorias: undefined,
-      sucursales: undefined,
-    }));
-
-    if (q && String(q).trim()) {
-      const needle = String(q).trim().toLowerCase();
-      result = result.filter((m) => {
-        const nota = (m.nota || '').toLowerCase();
-        const metodo = (m.metodo_pago || '').toLowerCase();
-        const cat = (m.categoria_nombre || '').toLowerCase();
-        const suc = (m.sucursal_nombre || '').toLowerCase();
-        return nota.includes(needle) || metodo.includes(needle) || cat.includes(needle) || suc.includes(needle);
-      });
-    }
-
-    return result;
+    return normalizarYFiltrarMovimientos((movs || []) as MovimientoDbRow[], q);
   }
 
-  static async obtenerMovimiento(id: string, org_id: string) {
+  static async listarMovimientosPaginados(
+    org_id: string,
+    filters: MovimientosFilter
+  ): Promise<MovimientosPaginadosResult> {
+    const { data: movs, error } = await this.construirQueryBase(org_id, filters);
+    if (error) throw error;
+
+    const filtrados = normalizarYFiltrarMovimientos((movs || []) as MovimientoDbRow[], filters.q);
+    const count = filtrados.length;
+    const totales = calcularTotalesMovimientos(filtrados);
+    const { limit, offset } = normalizarPaginacion(filters.limit, filters.offset);
+    const data = filtrados.slice(offset, offset + limit);
+
+    return { data, count, totales };
+  }
+
+  static async obtenerMovimiento(id: string, org_id: string): Promise<MovimientoListadoRow> {
     const { data, error } = await supabaseAdmin
       .from('movimientos')
       .select('*, categorias ( id, nombre ), sucursales ( id, nombre )')
@@ -160,14 +251,7 @@ export class MovimientosService {
       throw crearErrorHttp('Movimiento no encontrado', 404);
     }
 
-    const row = data as MovimientoDbRow;
-    return {
-      ...row,
-      categoria_nombre: extraerNombreRelacion(row.categorias) || 'Sin categoría',
-      sucursal_nombre: extraerNombreRelacion(row.sucursales) || 'Sin sucursal',
-      categorias: undefined,
-      sucursales: undefined,
-    };
+    return normalizarMovimiento(data as MovimientoDbRow);
   }
 
   private static async validarRelaciones(org_id: string, payload: MovimientoRelacionesInput) {
