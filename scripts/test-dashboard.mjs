@@ -1213,4 +1213,512 @@ describe('DashboardService y ruta HTTP GET /dashboard', () => {
       assert.deepEqual(httpBatchRes.body, { error: 'Error interno del servidor' });
     });
   });
+
+  describe('Caso 5: Filtro opcional sucursal_id en GET /dashboard y DashboardService', () => {
+    const SUC_UUID_A = '11111111-1111-4111-8111-111111111111';
+    const SUC_UUID_B = '22222222-2222-4222-8222-222222222222';
+    const SUC_UUID_EMPTY = '33333333-3333-4333-8333-333333333333';
+    const SUC_UUID_OTHER_ORG = '44444444-4444-4444-8444-444444444444';
+    const SUC_UUID_MISSING = '99999999-9999-4999-8999-999999999999';
+
+    let server;
+
+    before(async () => {
+      const app = express();
+      app.use(express.json());
+      app.use('/dashboard', dashboardRouter);
+      app.use(globalErrorHandler);
+      await new Promise((resolve) => {
+        server = app.listen(0, '127.0.0.1', resolve);
+      });
+    });
+
+    after(async () => {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve));
+      }
+    });
+
+    it('filtra rango, mes actual (>1000 filas en lotes) y recientes exclusivamente por sucursal_id valido en GET /dashboard', async () => {
+      dbState.sucursales = [
+        { id: SUC_UUID_A, org_id: ORG_A, nombre: 'Sucursal Centro UUID' },
+        { id: SUC_UUID_B, org_id: ORG_A, nombre: 'Sucursal Norte UUID' },
+        { id: SUC_UUID_EMPTY, org_id: ORG_A, nombre: 'Sucursal Sin Movimientos' },
+        { id: SUC_UUID_OTHER_ORG, org_id: ORG_B, nombre: 'Sucursal Secreta Org B' },
+      ];
+      dbState.pedidos = [
+        { id: 'ped-suc-a-1', org_id: ORG_A, folio: 'NC-SUC-A-01' },
+        { id: 'ped-suc-b-1', org_id: ORG_A, folio: 'NC-SUC-B-99' },
+      ];
+
+      const catMap = new Map(dbState.categorias.map((c) => [c.id, c.nombre]));
+      const sucMap = new Map(
+        dbState.sucursales
+          .filter((s) => s.org_id === ORG_A)
+          .map((s) => [s.id, s.nombre])
+      );
+
+      // Fechas ancladas al dia local actual para coincidir con mesDesde/mesHasta del handler HTTP.
+      const now = new Date();
+      const todayISO = obtenerHoyLocalISO(now);
+      const mesDesdeISO = obtenerHoyLocalISO(new Date(now.getFullYear(), now.getMonth(), 1));
+      const prevMonthISO = obtenerHoyLocalISO(new Date(now.getFullYear(), now.getMonth(), 0));
+      const outOfRangeEarlyISO = obtenerHoyLocalISO(new Date(now.getFullYear(), now.getMonth(), -5));
+      const todayDay = now.getDate();
+      const monthPrefix = todayISO.slice(0, 8);
+
+      const sucAPrevRows = [];
+      for (let i = 1; i <= 80; i++) {
+        sucAPrevRows.push(
+          buildMovimiento(i, {
+            org_id: ORG_A,
+            sucursal_id: SUC_UUID_A,
+            fecha: prevMonthISO,
+            created_at: `${prevMonthISO}T09:${String(i % 60).padStart(2, '0')}:00.000Z`,
+            monto: roundTwo(60 + (i % 15) + 0.25),
+          })
+        );
+      }
+
+      const sucAMesRows = [];
+      for (let i = 1; i <= 1120; i++) {
+        const idx = 80 + i;
+        const dayNum = ((i - 1) % todayDay) + 1;
+        const fecha = i === 1120 ? todayISO : `${monthPrefix}${String(dayNum).padStart(2, '0')}`;
+        const extraWeight = i > 1000 ? 300 : 0;
+        const min = String(Math.floor(i / 60) % 60).padStart(2, '0');
+        const sec = String(i % 60).padStart(2, '0');
+        sucAMesRows.push(
+          buildMovimiento(idx, {
+            org_id: ORG_A,
+            sucursal_id: SUC_UUID_A,
+            tipo: i === 1120 ? 'ingreso' : idx % 3 !== 0 ? 'ingreso' : 'egreso',
+            fecha,
+            created_at: i === 1120 ? `${todayISO}T22:30:00.000Z` : `${fecha}T10:${min}:${sec}.000Z`,
+            monto: i === 1120 ? 321.45 : roundTwo(40 + extraWeight + (i % 13) + 0.1),
+            pedido_id: i === 1120 ? 'ped-suc-a-1' : null,
+          })
+        );
+      }
+
+      const sucBRows = [];
+      for (let i = 1; i <= 600; i++) {
+        const idx = 2000 + i;
+        sucBRows.push(
+          buildMovimiento(idx, {
+            org_id: ORG_A,
+            sucursal_id: SUC_UUID_B,
+            tipo: i % 2 === 0 ? 'ingreso' : 'egreso',
+            fecha: todayISO,
+            created_at: `${todayISO}T23:59:${String(i % 60).padStart(2, '0')}.000Z`,
+            monto: 50000,
+            pedido_id: i === 600 ? 'ped-suc-b-1' : null,
+          })
+        );
+      }
+
+      const nullSucRows = [];
+      for (let i = 1; i <= 50; i++) {
+        nullSucRows.push(
+          buildMovimiento(3000 + i, {
+            org_id: ORG_A,
+            sucursal_id: null,
+            fecha: todayISO,
+            created_at: `${todayISO}T23:40:00.000Z`,
+            monto: 25000,
+          })
+        );
+      }
+
+      const otherOrgRows = [
+        buildMovimiento(4001, {
+          org_id: ORG_B,
+          sucursal_id: SUC_UUID_OTHER_ORG,
+          tipo: 'ingreso',
+          fecha: todayISO,
+          created_at: `${todayISO}T23:59:59.000Z`,
+          monto: 99999,
+        }),
+      ];
+
+      const outOfRangeEarlyRows = [
+        buildMovimiento(5001, {
+          org_id: ORG_A,
+          sucursal_id: SUC_UUID_A,
+          tipo: 'ingreso',
+          fecha: outOfRangeEarlyISO,
+          created_at: `${outOfRangeEarlyISO}T08:00:00.000Z`,
+          monto: 88888,
+        }),
+      ];
+
+      const sucARangeRows = [...sucAPrevRows, ...sucAMesRows];
+      dbState.movimientos = [
+        ...sucARangeRows,
+        ...sucBRows,
+        ...nullSucRows,
+        ...otherOrgRows,
+        ...outOfRangeEarlyRows,
+      ];
+
+      const expectedRange = computeExpectedAgregados(sucARangeRows, catMap, sucMap);
+      const expectedMes = computeExpectedAgregados(sucAMesRows, catMap, sucMap);
+
+      const res = await requestJson(
+        server,
+        `/dashboard?desde=${prevMonthISO}&hasta=${todayISO}&include=mes,recientes&limit_recientes=5&sucursal_id=${SUC_UUID_A}`,
+        { authorization: 'Bearer valid-token' }
+      );
+
+      assert.equal(res.status, 200);
+      assert.deepEqual(res.body.range, {
+        desde: prevMonthISO,
+        hasta: todayISO,
+        dias: todayDay + 1,
+      });
+      assert.equal(res.body.meta.items, 1200);
+      assert.deepEqual(res.body.totales, expectedRange.totales);
+      assert.deepEqual(res.body.por_categoria, expectedRange.porCategoria);
+
+      assert.equal(res.body.por_dia.length, todayDay + 1);
+      let sumaDiasIng = 0;
+      let sumaDiasEgr = 0;
+      for (const diaItem of res.body.por_dia) {
+        const expectedNode = expectedRange.byDay.get(diaItem.fecha);
+        const expIng = roundTwo(expectedNode?.ingresos ?? 0);
+        const expEgr = roundTwo(expectedNode?.egresos ?? 0);
+        assert.deepEqual(diaItem, {
+          fecha: diaItem.fecha,
+          ingresos: expIng,
+          egresos: expEgr,
+          balance: roundTwo(expIng - expEgr),
+        });
+        sumaDiasIng += diaItem.ingresos;
+        sumaDiasEgr += diaItem.egresos;
+      }
+      assert.equal(roundTwo(sumaDiasIng), res.body.totales.ingresos);
+      assert.equal(roundTwo(sumaDiasEgr), res.body.totales.egresos);
+
+      assert.deepEqual(res.body.kpis_mes, expectedMes.totales);
+      assert.notEqual(res.body.kpis_mes.ingresos, res.body.totales.ingresos);
+      assert.deepEqual(res.body.por_categoria_mes, expectedMes.porCategoria);
+      assert.deepEqual(res.body.por_sucursal_mes, expectedMes.porSucursal);
+      assert.equal(res.body.por_sucursal_mes.length, 1);
+      assert.equal(res.body.por_sucursal_mes[0].sucursal_id, SUC_UUID_A);
+      assert.equal(res.body.por_sucursal_mes[0].nombre, 'Sucursal Centro UUID');
+
+      assert.equal(res.body.recientes.length, 5);
+      for (const item of res.body.recientes) {
+        assert.equal(item.sucursal_id, SUC_UUID_A);
+        assert.equal(item.sucursal_nombre, 'Sucursal Centro UUID');
+      }
+      assert.equal(res.body.recientes[0].id, 'mov-01200');
+      assert.equal(res.body.recientes[0].monto, 321.45);
+      assert.equal(res.body.recientes[0].pedido_id, 'ped-suc-a-1');
+      assert.equal(res.body.recientes[0].pedido_folio, 'NC-SUC-A-01');
+
+      const serialized = JSON.stringify(res.body);
+      assert.equal(serialized.includes('NC-SUC-B-99'), false);
+      assert.equal(serialized.includes('Sucursal Norte UUID'), false);
+      assert.equal(serialized.includes('Sucursal Secreta Org B'), false);
+
+      const rangeQueries = dbState.queryLog.filter(
+        (q) => q.table === 'movimientos' && q.selectCols === 'tipo, monto, categoria_id, sucursal_id, fecha'
+      );
+      const mesQueries = dbState.queryLog.filter(
+        (q) => q.table === 'movimientos' && q.selectCols === 'tipo, monto, categoria_id, sucursal_id'
+      );
+      const recientesQueries = dbState.queryLog.filter(
+        (q) => q.table === 'movimientos' && q.limitVal === 5
+      );
+
+      assert.equal(rangeQueries.length, 2);
+      assert.deepEqual(
+        rangeQueries.map((q) => [q.rangeFrom, q.rangeTo]),
+        [
+          [0, 999],
+          [1000, 1999],
+        ]
+      );
+      for (const q of rangeQueries) {
+        assert.deepEqual(q.orders, [{ col: 'id', ascending: true }]);
+        assert.deepEqual(q.eqFilters, [
+          { col: 'org_id', val: ORG_A },
+          { col: 'sucursal_id', val: SUC_UUID_A },
+        ]);
+        assert.deepEqual(q.gteFilters, [{ col: 'fecha', val: prevMonthISO }]);
+        assert.deepEqual(q.lteFilters, [{ col: 'fecha', val: todayISO }]);
+      }
+
+      assert.equal(mesQueries.length, 2);
+      assert.deepEqual(
+        mesQueries.map((q) => [q.rangeFrom, q.rangeTo]),
+        [
+          [0, 999],
+          [1000, 1999],
+        ]
+      );
+      for (const q of mesQueries) {
+        assert.deepEqual(q.orders, [{ col: 'id', ascending: true }]);
+        assert.deepEqual(q.eqFilters, [
+          { col: 'org_id', val: ORG_A },
+          { col: 'sucursal_id', val: SUC_UUID_A },
+        ]);
+        assert.deepEqual(q.gteFilters, [{ col: 'fecha', val: mesDesdeISO }]);
+        assert.deepEqual(q.lteFilters, [{ col: 'fecha', val: todayISO }]);
+      }
+
+      assert.equal(recientesQueries.length, 1);
+      assert.deepEqual(recientesQueries[0].eqFilters, [
+        { col: 'org_id', val: ORG_A },
+        { col: 'sucursal_id', val: SUC_UUID_A },
+      ]);
+
+      // UUID en mayusculas se normaliza al id canonico de la sucursal en BD.
+      dbState.queryLog = [];
+      const upperRes = await requestJson(
+        server,
+        `/dashboard?desde=${prevMonthISO}&hasta=${todayISO}&include=none&sucursal_id=${SUC_UUID_A.toUpperCase()}`,
+        { authorization: 'Bearer valid-token' }
+      );
+      assert.equal(upperRes.status, 200);
+      assert.equal(upperRes.body.meta.items, 1200);
+      const upperMovQueries = dbState.queryLog.filter((q) => q.table === 'movimientos');
+      assert.equal(upperMovQueries.length, 2);
+      for (const q of upperMovQueries) {
+        assert.deepEqual(q.eqFilters, [
+          { col: 'org_id', val: ORG_A },
+          { col: 'sucursal_id', val: SUC_UUID_A },
+        ]);
+      }
+
+      // Consultas concurrentes sobre distintas sucursales no mezclan resultados.
+      const [concA, concB, concEmpty] = await Promise.all([
+        requestJson(
+          server,
+          `/dashboard?desde=${prevMonthISO}&hasta=${todayISO}&include=mes,recientes&limit_recientes=2&sucursal_id=${SUC_UUID_A}`,
+          { authorization: 'Bearer valid-token' }
+        ),
+        requestJson(
+          server,
+          `/dashboard?desde=${prevMonthISO}&hasta=${todayISO}&include=mes,recientes&limit_recientes=2&sucursal_id=${SUC_UUID_B}`,
+          { authorization: 'Bearer valid-token' }
+        ),
+        requestJson(
+          server,
+          `/dashboard?desde=${prevMonthISO}&hasta=${todayISO}&include=mes,recientes&limit_recientes=2&sucursal_id=${SUC_UUID_EMPTY}`,
+          { authorization: 'Bearer valid-token' }
+        ),
+      ]);
+
+      assert.equal(concA.status, 200);
+      assert.equal(concA.body.meta.items, 1200);
+      assert.equal(concB.status, 200);
+      assert.equal(concB.body.meta.items, 600);
+      assert.equal(concB.body.por_sucursal_mes.length, 1);
+      assert.equal(concB.body.por_sucursal_mes[0].sucursal_id, SUC_UUID_B);
+      assert.equal(concEmpty.status, 200);
+      assert.equal(concEmpty.body.meta.items, 0);
+      assert.deepEqual(concEmpty.body.totales, { ingresos: 0, egresos: 0, balance: 0 });
+      assert.deepEqual(concEmpty.body.kpis_mes, { ingresos: 0, egresos: 0, balance: 0 });
+      assert.deepEqual(concEmpty.body.por_sucursal_mes, []);
+      assert.deepEqual(concEmpty.body.recientes, []);
+    });
+
+    it('responde 400 con mensaje claro para sucursal_id con UUID invalido sin consultar tablas de dominio', async () => {
+      const invalidIds = [
+        'no-es-uuid',
+        'suc-1',
+        '12345',
+        '11111111-1111-4111-8111-11111111111',
+        '11111111-1111-4111-8111-11111111111z',
+        '11111111-1111-4111-8111-111111111111-extra',
+      ];
+
+      for (const badId of invalidIds) {
+        dbState.queryLog = [];
+        const res = await requestJson(
+          server,
+          `/dashboard?desde=2026-05-01&hasta=2026-05-20&sucursal_id=${encodeURIComponent(badId)}`,
+          { authorization: 'Bearer valid-token' }
+        );
+
+        assert.equal(res.status, 400, `Expected 400 for sucursal_id=${badId}`);
+        assert.deepEqual(res.body, { error: 'El parámetro sucursal_id debe ser un UUID válido' });
+
+        const domainQueries = dbState.queryLog.filter((q) => q.table !== 'organizacion_miembros');
+        assert.equal(domainQueries.length, 0, `No domain queries expected for sucursal_id=${badId}`);
+      }
+
+      dbState.queryLog = [];
+      await assert.rejects(
+        () =>
+          DashboardService.obtenerDashboard(
+            ORG_A,
+            { desde: '2026-05-01', hasta: '2026-05-20', sucursal_id: 'invalid-uuid' },
+            REF_DATE
+          ),
+        (err) =>
+          err instanceof DashboardValidationError &&
+          err.status === 400 &&
+          err.message === 'El parámetro sucursal_id debe ser un UUID válido'
+      );
+      assert.equal(dbState.queryLog.length, 0);
+    });
+
+    it('responde 404 Sucursal no encontrada cuando sucursal_id pertenece a otra org o no existe sin consultar movimientos', async () => {
+      dbState.sucursales = [
+        { id: SUC_UUID_A, org_id: ORG_A, nombre: 'Sucursal Org A' },
+        { id: SUC_UUID_OTHER_ORG, org_id: ORG_B, nombre: 'Sucursal Org B' },
+      ];
+      dbState.movimientos = [
+        buildMovimiento(1, { org_id: ORG_A, sucursal_id: SUC_UUID_A, fecha: '2026-05-10' }),
+        buildMovimiento(2, { org_id: ORG_B, sucursal_id: SUC_UUID_OTHER_ORG, fecha: '2026-05-10' }),
+      ];
+
+      for (const targetSucId of [SUC_UUID_OTHER_ORG, SUC_UUID_MISSING]) {
+        dbState.queryLog = [];
+        const res = await requestJson(
+          server,
+          `/dashboard?desde=2026-05-01&hasta=2026-05-20&include=mes,recientes&sucursal_id=${targetSucId}`,
+          { authorization: 'Bearer valid-token' }
+        );
+
+        assert.equal(res.status, 404, `Expected 404 for sucursal_id=${targetSucId}`);
+        assert.deepEqual(res.body, { error: 'Sucursal no encontrada' });
+
+        const sucursalesQueries = dbState.queryLog.filter((q) => q.table === 'sucursales');
+        const movQueries = dbState.queryLog.filter((q) => q.table === 'movimientos');
+        const catQueries = dbState.queryLog.filter((q) => q.table === 'categorias');
+        const pedidoQueries = dbState.queryLog.filter((q) => q.table === 'pedidos');
+
+        assert.equal(sucursalesQueries.length, 1);
+        assert.deepEqual(sucursalesQueries[0].eqFilters, [{ col: 'org_id', val: ORG_A }]);
+        assert.equal(movQueries.length, 0);
+        assert.equal(catQueries.length, 0);
+        assert.equal(pedidoQueries.length, 0);
+
+        await assert.rejects(
+          () =>
+            DashboardService.obtenerDashboard(
+              ORG_A,
+              { desde: '2026-05-01', hasta: '2026-05-20', sucursal_id: targetSucId },
+              REF_DATE
+            ),
+          (err) =>
+            err instanceof DashboardValidationError &&
+            err.status === 404 &&
+            err.message === 'Sucursal no encontrada'
+        );
+      }
+
+      dbState.queryLog = [];
+      dbState.injectedError = (q) =>
+        q.table === 'sucursales' ? new Error('Sucursales lookup failed') : null;
+      const errRes = await requestJson(
+        server,
+        `/dashboard?desde=2026-05-01&hasta=2026-05-20&sucursal_id=${SUC_UUID_A}`,
+        { authorization: 'Bearer valid-token' }
+      );
+      assert.equal(errRes.status, 500);
+      assert.deepEqual(errRes.body, { error: 'Error interno del servidor' });
+      assert.equal(dbState.queryLog.filter((q) => q.table === 'movimientos').length, 0);
+    });
+
+    it('mantiene comportamiento 100% retrocompatible al omitir sucursal_id o enviarlo vacio', async () => {
+      const todayISO = obtenerHoyLocalISO(new Date());
+      dbState.sucursales = [
+        { id: SUC_UUID_A, org_id: ORG_A, nombre: 'Sucursal Centro UUID' },
+        { id: SUC_UUID_B, org_id: ORG_A, nombre: 'Sucursal Norte UUID' },
+        { id: SUC_UUID_OTHER_ORG, org_id: ORG_B, nombre: 'Sucursal Org B' },
+      ];
+      dbState.movimientos = [
+        buildMovimiento(1, {
+          org_id: ORG_A,
+          sucursal_id: SUC_UUID_A,
+          tipo: 'ingreso',
+          monto: 300,
+          fecha: todayISO,
+          created_at: `${todayISO}T10:00:00.000Z`,
+        }),
+        buildMovimiento(2, {
+          org_id: ORG_A,
+          sucursal_id: SUC_UUID_B,
+          tipo: 'egreso',
+          monto: 120,
+          fecha: todayISO,
+          created_at: `${todayISO}T11:00:00.000Z`,
+        }),
+        buildMovimiento(3, {
+          org_id: ORG_A,
+          sucursal_id: null,
+          tipo: 'ingreso',
+          monto: 50,
+          fecha: todayISO,
+          created_at: `${todayISO}T12:00:00.000Z`,
+        }),
+        buildMovimiento(4, {
+          org_id: ORG_B,
+          sucursal_id: SUC_UUID_OTHER_ORG,
+          tipo: 'ingreso',
+          monto: 9999,
+          fecha: todayISO,
+          created_at: `${todayISO}T13:00:00.000Z`,
+        }),
+      ];
+
+      const paths = [
+        `/dashboard?desde=${todayISO}&hasta=${todayISO}&include=mes,recientes`,
+        `/dashboard?desde=${todayISO}&hasta=${todayISO}&include=mes,recientes&sucursal_id=`,
+        `/dashboard?desde=${todayISO}&hasta=${todayISO}&include=mes,recientes&sucursal_id=%20%20%20`,
+      ];
+
+      let baselineBody = null;
+      for (const path of paths) {
+        dbState.queryLog = [];
+        const res = await requestJson(server, path, { authorization: 'Bearer valid-token' });
+        assert.equal(res.status, 200, `Expected 200 for ${path}`);
+        assert.equal(res.body.meta.items, 3);
+        assert.deepEqual(res.body.totales, { ingresos: 350, egresos: 120, balance: 230 });
+        assert.deepEqual(res.body.kpis_mes, { ingresos: 350, egresos: 120, balance: 230 });
+        assert.deepEqual(res.body.por_sucursal_mes, [
+          {
+            sucursal_id: SUC_UUID_A,
+            nombre: 'Sucursal Centro UUID',
+            ingresos: 300,
+            egresos: 0,
+            balance: 300,
+          },
+          {
+            sucursal_id: SUC_UUID_B,
+            nombre: 'Sucursal Norte UUID',
+            ingresos: 0,
+            egresos: 120,
+            balance: -120,
+          },
+          {
+            sucursal_id: null,
+            nombre: 'Sin sucursal',
+            ingresos: 50,
+            egresos: 0,
+            balance: 50,
+          },
+        ]);
+        assert.equal(res.body.recientes.length, 3);
+
+        const movQueries = dbState.queryLog.filter((q) => q.table === 'movimientos');
+        assert.ok(movQueries.length >= 3);
+        for (const q of movQueries) {
+          const hasSucFilter = q.eqFilters.some((f) => f.col === 'sucursal_id');
+          assert.equal(hasSucFilter, false, `Unexpected sucursal_id filter for ${path}`);
+        }
+
+        if (baselineBody === null) {
+          baselineBody = res.body;
+        } else {
+          assert.deepEqual(res.body, baselineBody);
+        }
+      }
+    });
+  });
 });

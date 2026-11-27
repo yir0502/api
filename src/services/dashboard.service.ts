@@ -3,6 +3,7 @@ import { supabaseAdmin } from '../lib/supabase';
 export const SUPABASE_BATCH_SIZE = 1000;
 
 const FECHA_ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DEFAULT_INCLUDE = 'mes,recientes';
 const DEFAULT_LIMIT_RECIENTES = 5;
 const MIN_LIMIT_RECIENTES = 1;
@@ -17,6 +18,7 @@ export interface DashboardQueryInput {
   hasta?: unknown;
   include?: unknown;
   limit_recientes?: unknown;
+  sucursal_id?: unknown;
 }
 
 export interface DashboardOptionsNormalizadas {
@@ -25,6 +27,7 @@ export interface DashboardOptionsNormalizadas {
   incluirMes: boolean;
   incluirRecientes: boolean;
   limitRecientes: number;
+  sucursalId?: string;
 }
 
 export interface CatalogoNombreRow {
@@ -250,12 +253,16 @@ export function normalizarOpcionesDashboard(
 ): DashboardOptionsNormalizadas {
   const desdeRaw = extraerTextoQuery(input.desde);
   const hastaRaw = extraerTextoQuery(input.hasta);
+  const sucursalRaw = extraerTextoQuery(input.sucursal_id);
 
   if (desdeRaw !== undefined && !esFechaISOValida(desdeRaw)) {
     throw new DashboardValidationError('Fecha desde inválida: use formato YYYY-MM-DD', 400);
   }
   if (hastaRaw !== undefined && !esFechaISOValida(hastaRaw)) {
     throw new DashboardValidationError('Fecha hasta inválida: use formato YYYY-MM-DD', 400);
+  }
+  if (sucursalRaw !== undefined && !UUID_RE.test(sucursalRaw)) {
+    throw new DashboardValidationError('El parámetro sucursal_id debe ser un UUID válido', 400);
   }
 
   const desde = desdeRaw ?? obtenerDesdePorDefectoISO(29, referencia);
@@ -277,6 +284,7 @@ export function normalizarOpcionesDashboard(
     incluirMes: tokens.includes('mes'),
     incluirRecientes: tokens.includes('recientes'),
     limitRecientes: normalizarLimitRecientes(input.limit_recientes),
+    sucursalId: sucursalRaw,
   };
 }
 
@@ -302,19 +310,26 @@ export class DashboardService {
   private static async obtenerMovimientosRangoEnLotes(
     orgId: string,
     desde: string,
-    hasta: string
+    hasta: string,
+    sucursalId?: string
   ): Promise<MovimientoRangoRow[]> {
     const acumulado: MovimientoRangoRow[] = [];
     let inicio = 0;
 
     // PostgREST limita cada consulta individual a 1000 filas; iteramos por lotes ordenados por id.
     while (true) {
-      const { data, error } = await supabaseAdmin
+      let consulta = supabaseAdmin
         .from('movimientos')
         .select('tipo, monto, categoria_id, sucursal_id, fecha')
         .eq('org_id', orgId)
         .gte('fecha', desde)
-        .lte('fecha', hasta)
+        .lte('fecha', hasta);
+
+      if (sucursalId !== undefined) {
+        consulta = consulta.eq('sucursal_id', sucursalId);
+      }
+
+      const { data, error } = await consulta
         .order('id', { ascending: true })
         .range(inicio, inicio + SUPABASE_BATCH_SIZE - 1);
 
@@ -335,18 +350,25 @@ export class DashboardService {
   private static async obtenerMovimientosMesEnLotes(
     orgId: string,
     mesDesde: string,
-    mesHasta: string
+    mesHasta: string,
+    sucursalId?: string
   ): Promise<MovimientoMesRow[]> {
     const acumulado: MovimientoMesRow[] = [];
     let inicio = 0;
 
     while (true) {
-      const { data, error } = await supabaseAdmin
+      let consulta = supabaseAdmin
         .from('movimientos')
         .select('tipo, monto, categoria_id, sucursal_id')
         .eq('org_id', orgId)
         .gte('fecha', mesDesde)
-        .lte('fecha', mesHasta)
+        .lte('fecha', mesHasta);
+
+      if (sucursalId !== undefined) {
+        consulta = consulta.eq('sucursal_id', sucursalId);
+      }
+
+      const { data, error } = await consulta
         .order('id', { ascending: true })
         .range(inicio, inicio + SUPABASE_BATCH_SIZE - 1);
 
@@ -366,12 +388,19 @@ export class DashboardService {
 
   private static async obtenerRecientes(
     orgId: string,
-    limitRecientes: number
+    limitRecientes: number,
+    sucursalId?: string
   ): Promise<MovimientoRecienteRow[]> {
-    const { data, error } = await supabaseAdmin
+    let consulta = supabaseAdmin
       .from('movimientos')
       .select('id, tipo, monto, categoria_id, sucursal_id, metodo_pago, nota, pedido_id, fecha, created_at')
-      .eq('org_id', orgId)
+      .eq('org_id', orgId);
+
+    if (sucursalId !== undefined) {
+      consulta = consulta.eq('sucursal_id', sucursalId);
+    }
+
+    const { data, error } = await consulta
       .order('fecha', { ascending: false })
       .order('created_at', { ascending: false })
       .order('id', { ascending: false })
@@ -415,47 +444,104 @@ export class DashboardService {
     }
 
     const opciones = normalizarOpcionesDashboard(query, referencia);
-    const { desde, hasta, incluirMes, incluirRecientes, limitRecientes } = opciones;
+    const { desde, hasta, incluirMes, incluirRecientes, limitRecientes, sucursalId } = opciones;
 
     const mesDesde = obtenerPrimerDiaMesLocalISO(referencia);
     const mesHasta = obtenerHoyLocalISO(referencia);
 
-    const pCats = supabaseAdmin
-      .from('categorias')
-      .select('id, nombre')
-      .eq('org_id', orgId);
+    let catsRows: CatalogoNombreRow[];
+    let sucsRows: CatalogoNombreRow[];
+    let movsRange: MovimientoRangoRow[];
+    let movsMes: MovimientoMesRow[];
+    let recientesRows: MovimientoRecienteRow[];
 
-    const pSucs = supabaseAdmin
-      .from('sucursales')
-      .select('id, nombre')
-      .eq('org_id', orgId);
+    if (sucursalId === undefined) {
+      const pCats = supabaseAdmin
+        .from('categorias')
+        .select('id, nombre')
+        .eq('org_id', orgId);
 
-    const pMovsRange = this.obtenerMovimientosRangoEnLotes(orgId, desde, hasta);
-    const pMovsMes = incluirMes
-      ? this.obtenerMovimientosMesEnLotes(orgId, mesDesde, mesHasta)
-      : Promise.resolve<MovimientoMesRow[]>([]);
-    const pRecientes = incluirRecientes
-      ? this.obtenerRecientes(orgId, limitRecientes)
-      : Promise.resolve<MovimientoRecienteRow[]>([]);
+      const pSucs = supabaseAdmin
+        .from('sucursales')
+        .select('id, nombre')
+        .eq('org_id', orgId);
 
-    const [resCats, resSucs, movsRange, movsMes, recientesRows] = await Promise.all([
-      pCats,
-      pSucs,
-      pMovsRange,
-      pMovsMes,
-      pRecientes,
-    ]);
+      const pMovsRange = this.obtenerMovimientosRangoEnLotes(orgId, desde, hasta);
+      const pMovsMes = incluirMes
+        ? this.obtenerMovimientosMesEnLotes(orgId, mesDesde, mesHasta)
+        : Promise.resolve<MovimientoMesRow[]>([]);
+      const pRecientes = incluirRecientes
+        ? this.obtenerRecientes(orgId, limitRecientes)
+        : Promise.resolve<MovimientoRecienteRow[]>([]);
 
-    if (resCats.error) throw resCats.error;
-    if (resSucs.error) throw resSucs.error;
+      const [resCats, resSucs, rangeRows, mesRows, recRows] = await Promise.all([
+        pCats,
+        pSucs,
+        pMovsRange,
+        pMovsMes,
+        pRecientes,
+      ]);
+
+      if (resCats.error) throw resCats.error;
+      if (resSucs.error) throw resSucs.error;
+
+      catsRows = (resCats.data ?? []) as CatalogoNombreRow[];
+      sucsRows = (resSucs.data ?? []) as CatalogoNombreRow[];
+      movsRange = rangeRows;
+      movsMes = mesRows;
+      recientesRows = recRows;
+    } else {
+      const resSucs = await supabaseAdmin
+        .from('sucursales')
+        .select('id, nombre')
+        .eq('org_id', orgId);
+
+      if (resSucs.error) throw resSucs.error;
+
+      sucsRows = (resSucs.data ?? []) as CatalogoNombreRow[];
+      const sucursalEncontrada = sucsRows.find(
+        (suc) => suc.id.toLowerCase() === sucursalId.toLowerCase()
+      );
+      if (!sucursalEncontrada) {
+        throw new DashboardValidationError('Sucursal no encontrada', 404);
+      }
+
+      const sucursalCanonico = sucursalEncontrada.id;
+
+      const pCats = supabaseAdmin
+        .from('categorias')
+        .select('id, nombre')
+        .eq('org_id', orgId);
+      const pMovsRange = this.obtenerMovimientosRangoEnLotes(orgId, desde, hasta, sucursalCanonico);
+      const pMovsMes = incluirMes
+        ? this.obtenerMovimientosMesEnLotes(orgId, mesDesde, mesHasta, sucursalCanonico)
+        : Promise.resolve<MovimientoMesRow[]>([]);
+      const pRecientes = incluirRecientes
+        ? this.obtenerRecientes(orgId, limitRecientes, sucursalCanonico)
+        : Promise.resolve<MovimientoRecienteRow[]>([]);
+
+      const [resCats, rangeRows, mesRows, recRows] = await Promise.all([
+        pCats,
+        pMovsRange,
+        pMovsMes,
+        pRecientes,
+      ]);
+
+      if (resCats.error) throw resCats.error;
+
+      catsRows = (resCats.data ?? []) as CatalogoNombreRow[];
+      movsRange = rangeRows;
+      movsMes = mesRows;
+      recientesRows = recRows;
+    }
 
     const catMap = new Map<string, string>();
-    for (const cat of (resCats.data ?? []) as CatalogoNombreRow[]) {
+    for (const cat of catsRows) {
       catMap.set(cat.id, cat.nombre);
     }
 
     const sucMap = new Map<string, string>();
-    for (const suc of (resSucs.data ?? []) as CatalogoNombreRow[]) {
+    for (const suc of sucsRows) {
       sucMap.set(suc.id, suc.nombre);
     }
 

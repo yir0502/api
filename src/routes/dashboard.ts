@@ -21,6 +21,7 @@ r.get('/', async (req: AuthedRequest, res: Response) => {
       hasta: req.query.hasta,
       include: req.query.include,
       limit_recientes: req.query.limit_recientes,
+      sucursal_id: req.query.sucursal_id,
     });
 
     return res.json(data);
