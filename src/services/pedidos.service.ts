@@ -39,11 +39,152 @@ export interface ActualizarPedidoInput {
   omitir_whatsapp?: boolean;
 }
 
-interface ClienteRelacion {
+export const SUPABASE_BATCH_SIZE = 1000;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const FECHA_ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
+const ENTERO_NO_NEGATIVO_RE = /^\d+$/;
+const POR_COBRAR_UMBRAL = 0.005;
+const DEFAULT_LIMIT_PAGINADO = 20;
+const MIN_LIMIT_PAGINADO = 1;
+const MAX_LIMIT_PAGINADO = 100;
+const DEFAULT_OFFSET_PAGINADO = 0;
+const SELECT_PEDIDOS_LISTADO = '*, clientes(nombre, telefono), sucursales(nombre)';
+
+export type EstadoPedidoFiltro =
+  | 'recibido'
+  | 'lavando'
+  | 'secando'
+  | 'doblando'
+  | 'listo'
+  | 'entregado'
+  | 'cancelado';
+
+export const ESTADOS_PEDIDO_VALIDOS: readonly EstadoPedidoFiltro[] = [
+  'recibido',
+  'lavando',
+  'secando',
+  'doblando',
+  'listo',
+  'entregado',
+  'cancelado',
+];
+
+const ESTADOS_PEDIDO_SET: ReadonlySet<string> = new Set<string>(ESTADOS_PEDIDO_VALIDOS);
+const ESTADOS_ACTIVOS_LISTADO: readonly string[] = [
+  'recibido',
+  'lavando',
+  'secando',
+  'doblando',
+  'listo',
+  'en_proceso',
+];
+const ESTADOS_EN_PROCESO_SET: ReadonlySet<string> = new Set([
+  'recibido',
+  'lavando',
+  'secando',
+  'doblando',
+  'en_proceso',
+]);
+const ESTADOS_HISTORIAL_LISTADO: readonly string[] = ['entregado', 'cancelado'];
+const ESTADOS_HISTORIAL_SET: ReadonlySet<string> = new Set(ESTADOS_HISTORIAL_LISTADO);
+
+export class PedidosValidationError extends Error {
+  readonly status = 400;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'PedidosValidationError';
+  }
+}
+
+export interface ClienteRelacion {
   id?: string;
   nombre: string;
   telefono: string;
   permite_whatsapp?: boolean;
+}
+
+export interface SucursalRelacion {
+  id?: string;
+  nombre?: string | null;
+}
+
+export interface PedidoDbRow {
+  id: string;
+  org_id: string;
+  folio: string;
+  cliente_id?: string | null;
+  sucursal_id?: string | null;
+  estado: string;
+  descripcion?: string | null;
+  monto_total?: number | null;
+  saldo_pendiente?: number | null;
+  descuento_aplicado?: number | null;
+  promo_canjeada?: boolean | null;
+  puntos_generados?: boolean | null;
+  fecha_entrega_estimada?: string | null;
+  fecha_entregado?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  clientes?: ClienteRelacion | ClienteRelacion[] | null;
+  sucursales?: SucursalRelacion | SucursalRelacion[] | null;
+}
+
+export interface PedidoRecord extends PedidoDbRow {
+  cliente_nombre: string;
+  cliente_telefono: string;
+  sucursal_nombre: string;
+  whatsapp_automatico: boolean;
+}
+
+export interface PedidosPorEstadoCount {
+  recibido: number;
+  lavando: number;
+  secando: number;
+  doblando: number;
+  listo: number;
+  entregado: number;
+  cancelado: number;
+}
+
+export interface PedidosResumen {
+  total: number;
+  en_proceso: number;
+  listos: number;
+  por_cobrar_count: number;
+  por_cobrar_monto: number;
+  por_estado: PedidosPorEstadoCount;
+}
+
+export interface PedidosPaginadosResponse {
+  data: PedidoRecord[];
+  count: number;
+  resumen: PedidosResumen;
+}
+
+export interface ListarPedidosPaginadosParams {
+  activo?: unknown;
+  q?: unknown;
+  sucursal_id?: unknown;
+  estado?: unknown;
+  solo_por_cobrar?: unknown;
+  desde?: unknown;
+  hasta?: unknown;
+  limit?: unknown;
+  offset?: unknown;
+}
+
+export interface PedidosPaginadosOptions {
+  activo: boolean;
+  q?: string;
+  sucursalId?: string;
+  estado?: EstadoPedidoFiltro;
+  soloPorCobrar: boolean;
+  desde?: string;
+  hasta?: string;
+  limit: number;
+  offset: number;
 }
 
 interface CategoriaIngresoRow {
@@ -58,6 +199,383 @@ const categoriaDefaultCache = new Map<string, { id: string | null; expiresAt: nu
 function normalizarRelacionCliente(rel: ClienteRelacion | ClienteRelacion[] | null | undefined): ClienteRelacion | null {
   if (!rel) return null;
   return Array.isArray(rel) ? (rel[0] ?? null) : rel;
+}
+
+function normalizarRelacionSucursal(
+  rel: SucursalRelacion | SucursalRelacion[] | null | undefined
+): SucursalRelacion | null {
+  if (!rel) return null;
+  return Array.isArray(rel) ? (rel[0] ?? null) : rel;
+}
+
+function mapearPedidoListado(row: PedidoDbRow, waAuto: boolean): PedidoRecord {
+  const cli = normalizarRelacionCliente(row.clientes);
+  const suc = normalizarRelacionSucursal(row.sucursales);
+  return {
+    ...row,
+    cliente_nombre: cli?.nombre || 'Cliente Manual',
+    cliente_telefono: cli?.telefono || '',
+    sucursal_nombre: suc?.nombre || 'Sin sucursal',
+    whatsapp_automatico: waAuto,
+  };
+}
+
+function redondearDosDecimales(valor: number): number {
+  const redondeado = Math.round(valor * 100) / 100;
+  return redondeado === 0 ? 0 : redondeado;
+}
+
+function esFechaISOValida(valor: string): boolean {
+  if (!FECHA_ISO_RE.test(valor)) return false;
+  const [anio, mes, dia] = valor.split('-').map(Number);
+  const fecha = new Date(Date.UTC(anio, mes - 1, dia));
+  return (
+    fecha.getUTCFullYear() === anio &&
+    fecha.getUTCMonth() === mes - 1 &&
+    fecha.getUTCDate() === dia
+  );
+}
+
+function esEstadoPedidoValido(valor: string): valor is EstadoPedidoFiltro {
+  return ESTADOS_PEDIDO_SET.has(valor);
+}
+
+function extraerValorQuery(valor: unknown): unknown {
+  if (Array.isArray(valor)) {
+    return valor.length > 0 ? valor[0] : undefined;
+  }
+  return valor;
+}
+
+function parsearActivo(raw: unknown): boolean {
+  const candidato = extraerValorQuery(raw);
+  if (candidato === undefined || candidato === null) return true;
+  if (typeof candidato === 'boolean') return candidato;
+  if (typeof candidato === 'string') {
+    const limpio = candidato.trim().toLowerCase();
+    if (limpio === '') return true;
+    if (limpio === 'true') return true;
+    if (limpio === 'false') return false;
+  }
+  throw new PedidosValidationError('El parámetro activo debe ser "true" o "false"');
+}
+
+function parsearBusqueda(raw: unknown): string | undefined {
+  const candidato = extraerValorQuery(raw);
+  if (candidato === undefined || candidato === null) return undefined;
+  if (typeof candidato !== 'string') {
+    throw new PedidosValidationError('El parámetro q debe ser una cadena de texto');
+  }
+  const limpio = candidato.trim();
+  return limpio.length > 0 ? limpio : undefined;
+}
+
+function parsearSucursalId(raw: unknown): string | undefined {
+  const candidato = extraerValorQuery(raw);
+  if (candidato === undefined || candidato === null) return undefined;
+  if (typeof candidato !== 'string') {
+    throw new PedidosValidationError('El parámetro sucursal_id debe ser un UUID válido');
+  }
+  const limpio = candidato.trim();
+  if (limpio === '') return undefined;
+  if (!UUID_RE.test(limpio)) {
+    throw new PedidosValidationError('El parámetro sucursal_id debe ser un UUID válido');
+  }
+  return limpio;
+}
+
+function parsearEstado(raw: unknown): EstadoPedidoFiltro | undefined {
+  const candidato = extraerValorQuery(raw);
+  if (candidato === undefined || candidato === null) return undefined;
+  if (typeof candidato !== 'string') {
+    throw new PedidosValidationError(
+      'El parámetro estado es inválido. Valores permitidos: recibido, lavando, secando, doblando, listo, entregado, cancelado'
+    );
+  }
+  const limpio = candidato.trim().toLowerCase();
+  if (limpio === '') return undefined;
+  if (!esEstadoPedidoValido(limpio)) {
+    throw new PedidosValidationError(
+      'El parámetro estado es inválido. Valores permitidos: recibido, lavando, secando, doblando, listo, entregado, cancelado'
+    );
+  }
+  return limpio;
+}
+
+function parsearSoloPorCobrar(raw: unknown): boolean {
+  const candidato = extraerValorQuery(raw);
+  if (candidato === undefined || candidato === null) return false;
+  if (typeof candidato === 'boolean') return candidato;
+  if (typeof candidato === 'string') {
+    const limpio = candidato.trim().toLowerCase();
+    if (limpio === '') return false;
+    if (limpio === 'true' || limpio === '1') return true;
+    if (limpio === 'false' || limpio === '0') return false;
+  }
+  throw new PedidosValidationError('El parámetro solo_por_cobrar debe ser "true", "false", "1" o "0"');
+}
+
+function parsearFechaFiltro(raw: unknown, campo: 'desde' | 'hasta'): string | undefined {
+  const candidato = extraerValorQuery(raw);
+  if (candidato === undefined || candidato === null) return undefined;
+  if (typeof candidato !== 'string') {
+    throw new PedidosValidationError(`La fecha ${campo} es inválida; use el formato YYYY-MM-DD`);
+  }
+  const limpio = candidato.trim();
+  if (limpio === '') return undefined;
+  if (!esFechaISOValida(limpio)) {
+    throw new PedidosValidationError(`La fecha ${campo} es inválida; use el formato YYYY-MM-DD`);
+  }
+  return limpio;
+}
+
+function parsearLimit(raw: unknown): number {
+  const candidato = extraerValorQuery(raw);
+  if (candidato === undefined || candidato === null) return DEFAULT_LIMIT_PAGINADO;
+
+  let valor: number;
+  if (typeof candidato === 'number') {
+    if (!Number.isInteger(candidato)) {
+      throw new PedidosValidationError('El parámetro limit debe ser un número entero entre 1 y 100');
+    }
+    valor = candidato;
+  } else if (typeof candidato === 'string') {
+    const limpio = candidato.trim();
+    if (limpio === '') return DEFAULT_LIMIT_PAGINADO;
+    if (!ENTERO_NO_NEGATIVO_RE.test(limpio)) {
+      throw new PedidosValidationError('El parámetro limit debe ser un número entero entre 1 y 100');
+    }
+    valor = Number(limpio);
+  } else {
+    throw new PedidosValidationError('El parámetro limit debe ser un número entero entre 1 y 100');
+  }
+
+  if (!Number.isSafeInteger(valor) || valor < MIN_LIMIT_PAGINADO || valor > MAX_LIMIT_PAGINADO) {
+    throw new PedidosValidationError('El parámetro limit debe ser un número entero entre 1 y 100');
+  }
+
+  return valor;
+}
+
+function parsearOffset(raw: unknown): number {
+  const candidato = extraerValorQuery(raw);
+  if (candidato === undefined || candidato === null) return DEFAULT_OFFSET_PAGINADO;
+
+  let valor: number;
+  if (typeof candidato === 'number') {
+    if (!Number.isInteger(candidato) || candidato < 0) {
+      throw new PedidosValidationError('El parámetro offset debe ser un número entero mayor o igual a 0');
+    }
+    valor = candidato;
+  } else if (typeof candidato === 'string') {
+    const limpio = candidato.trim();
+    if (limpio === '') return DEFAULT_OFFSET_PAGINADO;
+    if (!ENTERO_NO_NEGATIVO_RE.test(limpio)) {
+      throw new PedidosValidationError('El parámetro offset debe ser un número entero mayor o igual a 0');
+    }
+    valor = Number(limpio);
+  } else {
+    throw new PedidosValidationError('El parámetro offset debe ser un número entero mayor o igual a 0');
+  }
+
+  if (!Number.isSafeInteger(valor) || valor < 0) {
+    throw new PedidosValidationError('El parámetro offset debe ser un número entero mayor o igual a 0');
+  }
+
+  return valor;
+}
+
+export function normalizarParamsPedidosPaginados(
+  params: ListarPedidosPaginadosParams = {}
+): PedidosPaginadosOptions {
+  const activo = parsearActivo(params.activo);
+  const q = parsearBusqueda(params.q);
+  const sucursalId = parsearSucursalId(params.sucursal_id);
+  const estado = parsearEstado(params.estado);
+  const soloPorCobrar = parsearSoloPorCobrar(params.solo_por_cobrar);
+  const desde = parsearFechaFiltro(params.desde, 'desde');
+  const hasta = parsearFechaFiltro(params.hasta, 'hasta');
+  const limit = parsearLimit(params.limit);
+  const offset = parsearOffset(params.offset);
+
+  if (desde !== undefined && hasta !== undefined && desde > hasta) {
+    throw new PedidosValidationError('Rango de fechas inválido: desde no puede ser mayor que hasta');
+  }
+
+  return {
+    activo,
+    q,
+    sucursalId,
+    estado,
+    soloPorCobrar,
+    desde,
+    hasta,
+    limit,
+    offset,
+  };
+}
+
+function obtenerSaldoPendiente(pedido: {
+  estado?: string | null;
+  saldo_pendiente?: number | string | null;
+}): number {
+  if (pedido.estado === 'cancelado') return 0;
+  const saldo = Number(pedido.saldo_pendiente);
+  if (!Number.isFinite(saldo) || saldo <= POR_COBRAR_UMBRAL) return 0;
+  return saldo;
+}
+
+function estaPorCobrar(pedido: {
+  estado?: string | null;
+  saldo_pendiente?: number | string | null;
+}): boolean {
+  return obtenerSaldoPendiente(pedido) > POR_COBRAR_UMBRAL;
+}
+
+function crearResumenVacio(): PedidosResumen {
+  return {
+    total: 0,
+    en_proceso: 0,
+    listos: 0,
+    por_cobrar_count: 0,
+    por_cobrar_monto: 0,
+    por_estado: {
+      recibido: 0,
+      lavando: 0,
+      secando: 0,
+      doblando: 0,
+      listo: 0,
+      entregado: 0,
+      cancelado: 0,
+    },
+  };
+}
+
+export function calcularResumenPedidos(pedidos: ReadonlyArray<PedidoRecord>): PedidosResumen {
+  const resumen = crearResumenVacio();
+  let montoPorCobrar = 0;
+
+  for (const pedido of pedidos) {
+    resumen.total += 1;
+
+    const estado = pedido.estado;
+    // Las filas legacy con estado en_proceso cuentan en total y en_proceso sin alterar las 7 claves exactas de por_estado.
+    if (esEstadoPedidoValido(estado)) {
+      resumen.por_estado[estado] += 1;
+    }
+
+    if (ESTADOS_EN_PROCESO_SET.has(estado)) {
+      resumen.en_proceso += 1;
+    } else if (estado === 'listo') {
+      resumen.listos += 1;
+    }
+
+    const saldo = obtenerSaldoPendiente(pedido);
+    if (saldo > POR_COBRAR_UMBRAL) {
+      resumen.por_cobrar_count += 1;
+      montoPorCobrar += saldo;
+    }
+  }
+
+  resumen.por_cobrar_monto = redondearDosDecimales(montoPorCobrar);
+  return resumen;
+}
+
+function extraerFechaISODia(valor: string | null | undefined): string | null {
+  if (typeof valor !== 'string') return null;
+  const limpio = valor.trim();
+  if (limpio.length < 10) return null;
+  const prefijo = limpio.slice(0, 10);
+  return FECHA_ISO_RE.test(prefijo) ? prefijo : null;
+}
+
+function obtenerFechaEfectivaHistorial(pedido: {
+  fecha_entregado?: string | null;
+  created_at?: string | null;
+}): string | null {
+  return extraerFechaISODia(pedido.fecha_entregado) ?? extraerFechaISODia(pedido.created_at);
+}
+
+function parsearTimestamp(valor: string | null | undefined): number | null {
+  if (typeof valor !== 'string') return null;
+  const limpio = valor.trim();
+  if (!limpio) return null;
+  const ms = Date.parse(limpio);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function compararTextoAsc(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
+function compararTimestampsDescNullsLast(
+  a: string | null | undefined,
+  b: string | null | undefined
+): number {
+  const tsA = parsearTimestamp(a);
+  const tsB = parsearTimestamp(b);
+  if (tsA !== null && tsB !== null) {
+    if (tsA !== tsB) return tsB - tsA;
+    return 0;
+  }
+  if (tsA !== null) return -1;
+  if (tsB !== null) return 1;
+  return 0;
+}
+
+function compararTimestampsAscNullsLast(
+  a: string | null | undefined,
+  b: string | null | undefined
+): number {
+  const tsA = parsearTimestamp(a);
+  const tsB = parsearTimestamp(b);
+  if (tsA !== null && tsB !== null) {
+    if (tsA !== tsB) return tsA - tsB;
+    return 0;
+  }
+  if (tsA !== null) return -1;
+  if (tsB !== null) return 1;
+  return 0;
+}
+
+function compararPedidosActivos(a: PedidoRecord, b: PedidoRecord): number {
+  const cmpEstimada = compararTimestampsAscNullsLast(
+    a.fecha_entrega_estimada,
+    b.fecha_entrega_estimada
+  );
+  if (cmpEstimada !== 0) return cmpEstimada;
+
+  const cmpCreated = compararTimestampsDescNullsLast(a.created_at, b.created_at);
+  if (cmpCreated !== 0) return cmpCreated;
+
+  return compararTextoAsc(a.id, b.id);
+}
+
+function compararPedidosHistorial(a: PedidoRecord, b: PedidoRecord): number {
+  const cmpEntregado = compararTimestampsDescNullsLast(a.fecha_entregado, b.fecha_entregado);
+  if (cmpEntregado !== 0) return cmpEntregado;
+
+  const cmpCreated = compararTimestampsDescNullsLast(a.created_at, b.created_at);
+  if (cmpCreated !== 0) return cmpCreated;
+
+  return compararTextoAsc(a.id, b.id);
+}
+
+function coincideBusquedaPedido(pedido: PedidoRecord, needleLower: string): boolean {
+  const folio = (pedido.folio || '').toLowerCase();
+  if (folio.includes(needleLower)) return true;
+
+  const descripcion = (pedido.descripcion || '').toLowerCase();
+  if (descripcion.includes(needleLower)) return true;
+
+  const cli = normalizarRelacionCliente(pedido.clientes);
+  const clienteNombre = (cli?.nombre || '').toLowerCase();
+  if (clienteNombre.includes(needleLower)) return true;
+
+  const clienteTelefono = (cli?.telefono || '').toLowerCase();
+  return clienteTelefono.includes(needleLower);
 }
 
 export class PedidosService {
@@ -198,17 +716,145 @@ export class PedidosService {
     if (error) throw error;
 
     const waAuto = WhatsappService.isConfigured();
-    return (data || []).map((p) => {
-      const cli = normalizarRelacionCliente(p.clientes as ClienteRelacion | ClienteRelacion[] | null);
-      const suc = Array.isArray(p.sucursales) ? p.sucursales[0] : p.sucursales;
+    return ((data || []) as PedidoDbRow[]).map((p) => mapearPedidoListado(p, waAuto));
+  }
+
+  private static async obtenerPedidosEnLotes(
+    orgId: string,
+    estados: readonly string[],
+    sucursalId?: string
+  ): Promise<PedidoDbRow[]> {
+    if (estados.length === 0) return [];
+
+    const acumulado: PedidoDbRow[] = [];
+    let inicio = 0;
+
+    // PostgREST limita cada consulta individual a 1000 filas; iteramos por lotes ordenados por id.
+    while (true) {
+      let consulta = supabaseAdmin
+        .from('pedidos')
+        .select(SELECT_PEDIDOS_LISTADO)
+        .eq('org_id', orgId)
+        .in('estado', [...estados]);
+
+      if (sucursalId !== undefined) {
+        consulta = consulta.eq('sucursal_id', sucursalId);
+      }
+
+      const { data, error } = await consulta
+        .order('id', { ascending: true })
+        .range(inicio, inicio + SUPABASE_BATCH_SIZE - 1);
+
+      if (error) throw error;
+
+      const lote = (data ?? []) as PedidoDbRow[];
+      acumulado.push(...lote);
+
+      if (lote.length < SUPABASE_BATCH_SIZE) {
+        break;
+      }
+      inicio += SUPABASE_BATCH_SIZE;
+    }
+
+    return acumulado;
+  }
+
+  static async listarPedidosPaginados(
+    orgId: string,
+    params: ListarPedidosPaginadosParams = {}
+  ): Promise<PedidosPaginadosResponse> {
+    if (typeof orgId !== 'string' || !orgId.trim()) {
+      throw new PedidosValidationError('La organización es requerida');
+    }
+
+    const opciones = normalizarParamsPedidosPaginados(params);
+    const waAuto = WhatsappService.isConfigured();
+    const needleLower = opciones.q
+      ? this.extraerTerminoBusqueda(opciones.q).toLowerCase()
+      : '';
+
+    if (opciones.activo) {
+      const filas = await this.obtenerPedidosEnLotes(
+        orgId,
+        ESTADOS_ACTIVOS_LISTADO,
+        opciones.sucursalId
+      );
+      let pedidos = filas.map((fila) => mapearPedidoListado(fila, waAuto));
+
+      if (needleLower) {
+        pedidos = pedidos.filter((p) => coincideBusquedaPedido(p, needleLower));
+      }
+
+      // El resumen de activos se calcula antes de filtrar por estado o solo_por_cobrar para mantener estables los KPIs.
+      const resumen = calcularResumenPedidos(pedidos);
+
+      if (opciones.estado) {
+        pedidos = pedidos.filter((p) => p.estado === opciones.estado);
+      }
+      if (opciones.soloPorCobrar) {
+        pedidos = pedidos.filter(estaPorCobrar);
+      }
+
+      pedidos.sort(compararPedidosActivos);
+
       return {
-        ...p,
-        cliente_nombre: cli?.nombre || 'Cliente Manual',
-        cliente_telefono: cli?.telefono || '',
-        sucursal_nombre: (suc as { nombre?: string } | null)?.nombre || 'Sin sucursal',
-        whatsapp_automatico: waAuto,
+        data: pedidos,
+        count: pedidos.length,
+        resumen,
       };
-    });
+    }
+
+    const estadosHistorial: readonly string[] = opciones.estado
+      ? ESTADOS_HISTORIAL_SET.has(opciones.estado)
+        ? [opciones.estado]
+        : []
+      : ESTADOS_HISTORIAL_LISTADO;
+
+    if (estadosHistorial.length === 0) {
+      return {
+        data: [],
+        count: 0,
+        resumen: crearResumenVacio(),
+      };
+    }
+
+    const filas = await this.obtenerPedidosEnLotes(
+      orgId,
+      estadosHistorial,
+      opciones.sucursalId
+    );
+    let pedidos = filas.map((fila) => mapearPedidoListado(fila, waAuto));
+
+    if (opciones.estado) {
+      pedidos = pedidos.filter((p) => p.estado === opciones.estado);
+    }
+    if (needleLower) {
+      pedidos = pedidos.filter((p) => coincideBusquedaPedido(p, needleLower));
+    }
+    if (opciones.soloPorCobrar) {
+      pedidos = pedidos.filter(estaPorCobrar);
+    }
+    if (opciones.desde !== undefined || opciones.hasta !== undefined) {
+      pedidos = pedidos.filter((p) => {
+        const fechaEfectiva = obtenerFechaEfectivaHistorial(p);
+        if (!fechaEfectiva) return false;
+        if (opciones.desde !== undefined && fechaEfectiva < opciones.desde) return false;
+        if (opciones.hasta !== undefined && fechaEfectiva > opciones.hasta) return false;
+        return true;
+      });
+    }
+
+    const resumen = calcularResumenPedidos(pedidos);
+    const count = pedidos.length;
+
+    pedidos.sort(compararPedidosHistorial);
+    const data = pedidos.slice(opciones.offset, opciones.offset + opciones.limit);
+
+    return {
+      data,
+      count,
+      resumen,
+    };
   }
 
   static async obtenerPedido(id: string, org_id: string) {
@@ -669,4 +1315,11 @@ export class PedidosService {
     const { error: deleteError } = await supabaseAdmin.from('pedido_evidencias').delete().eq('id', evidenciaId);
     if (deleteError) throw deleteError;
   }
+}
+
+export async function listarPedidosPaginados(
+  orgId: string,
+  params: ListarPedidosPaginadosParams = {}
+): Promise<PedidosPaginadosResponse> {
+  return PedidosService.listarPedidosPaginados(orgId, params);
 }

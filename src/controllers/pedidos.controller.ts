@@ -1,7 +1,14 @@
 import { Response } from 'express';
 import { AuthedRequest } from '../lib/auth';
-import { PedidosService } from '../services/pedidos.service';
+import { PedidosService, PedidosValidationError } from '../services/pedidos.service';
 import { WhatsappService } from '../services/whatsapp.service';
+
+function esListadoPaginado(valor: unknown): boolean {
+  const candidato = Array.isArray(valor) ? valor[0] : valor;
+  if (typeof candidato !== 'string') return false;
+  const normalizado = candidato.trim().toLowerCase();
+  return normalizado === '1' || normalizado === 'true';
+}
 
 export class PedidosController {
   static async estadoIntegraciones(_req: AuthedRequest, res: Response) {
@@ -12,7 +19,43 @@ export class PedidosController {
 
   static async listar(req: AuthedRequest, res: Response) {
     const org_id = req.org_id!;
-    const { activo, q, limit, offset, deuda } = req.query;
+    const {
+      paginated,
+      activo,
+      q,
+      limit,
+      offset,
+      deuda,
+      sucursal_id,
+      estado,
+      solo_por_cobrar,
+      desde,
+      hasta,
+    } = req.query;
+
+    if (esListadoPaginado(paginated)) {
+      try {
+        const result = await PedidosService.listarPedidosPaginados(org_id, {
+          activo,
+          q,
+          sucursal_id,
+          estado,
+          solo_por_cobrar,
+          desde,
+          hasta,
+          limit,
+          offset,
+        });
+        res.json(result);
+        return;
+      } catch (err: unknown) {
+        if (err instanceof PedidosValidationError) {
+          res.status(err.status).json({ error: err.message });
+          return;
+        }
+        throw err;
+      }
+    }
 
     const result = await PedidosService.listarPedidos(
       org_id,
